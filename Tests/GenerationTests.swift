@@ -6,6 +6,7 @@ final class CaptureProtocol: URLProtocol {
     static var captured: [[String: String]] = []
     static var response: [String: Any] = [:]
     static var routedResponses: [String: Any] = [:]
+    static var routedStatus: [String: Int] = [:]
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "127.0.0.1" }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
@@ -33,7 +34,8 @@ final class CaptureProtocol: URLProtocol {
         }
         Self.captured.append(fields)
         let dataOut = try! JSONSerialization.data(withJSONObject: Self.routedResponses[request.url!.path] ?? Self.response)
-        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
+        let status = Self.routedStatus[request.url!.path] ?? 200
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: dataOut)
         client?.urlProtocolDidFinishLoading(self)
     }

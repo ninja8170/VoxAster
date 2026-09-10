@@ -7,6 +7,17 @@ extension Phase1Tests {
         check(!model.performanceBusy,"performance operation completes")
     }
     static func performanceTests(model: AppModel, output: String) throws {
+        let requestCountBeforeLoading = CaptureProtocol.captured.count
+        model.modelReady = false
+        model.status = "Starting model…"
+        model.errorMessage = nil
+        model.preparePerformance()
+        check(CaptureProtocol.captured.count == requestCountBeforeLoading,
+              "Performance Prepare sends no request while model is loading")
+        check(model.errorMessage?.contains("still loading") == true,
+              "Performance Prepare reports actionable loading state")
+        model.modelReady = true
+
         check(PerformanceDirection.pause(500) == "[pause 500ms]", "Pause chip exact syntax")
         check(PerformanceDirection.pause(1) != nil && PerformanceDirection.pause(10000) != nil, "pause authoring bounds inclusive")
         check(PerformanceDirection.pause(0) == nil && PerformanceDirection.pause(10001) == nil, "out-of-range pause disabled")
@@ -38,6 +49,12 @@ extension Phase1Tests {
         model.timeShift=0.3; model.positionTemperature=7; model.classTemperature=0.6; model.layerPenaltyFactor=4
         model.generationSeed=0; model.cloneLanguage="English"
         model.useDuration=true; model.targetDuration=7
+        CaptureProtocol.routedStatus["/performance/prepare"] = 404
+        model.errorMessage = nil
+        model.preparePerformance(); waitPerformance(model)
+        check(model.errorMessage?.contains("older OmniVoice app/backend") == true,
+              "old-backend 404 becomes actionable Performance API error")
+        CaptureProtocol.routedStatus.removeValue(forKey:"/performance/prepare")
         model.preparePerformance(); waitPerformance(model)
         let request=CaptureProtocol.captured.last(where:{$0["route"] == "/performance/prepare"})!
         let sent=try JSONDecoder().decode([String:String].self,from:Data(request["settings"]!.utf8))

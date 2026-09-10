@@ -33,9 +33,20 @@ enum PerformanceDirection {
 }
 
 extension AppModel {
+    private var performanceBackendUnavailableMessage: String {
+        if status == "Incompatible backend" {
+            return "Performance requires the OmniVoice 3.7.0 backend. Close the older OmniVoice app/backend, reopen this build, and wait for Ready."
+        }
+        return "OmniVoice is still loading. Wait for the status to show Ready before preparing a Performance production."
+    }
+
     @MainActor
     func performanceCall<T: Decodable>(_ path: String, fields: [String:String]? = nil,
                                       reference: URL? = nil, post: Bool = false) async throws -> T {
+        guard modelReady else {
+            throw NSError(domain:"Performance", code:503,
+                userInfo:[NSLocalizedDescriptionKey:performanceBackendUnavailableMessage])
+        }
         var request = URLRequest(url:URL(string:"http://127.0.0.1:8011/" + path)!)
         request.timeoutInterval = 3600
         if let fields {
@@ -54,15 +65,29 @@ extension AppModel {
             body.append(Data("--\(boundary)--\r\n".utf8)); request.httpBody = body
         } else if post { request.httpMethod = "POST" }
         let (data,response) = try await session.data(for:request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             let detail = (try? JSONSerialization.jsonObject(with:data)) as? [String:Any]
-            throw NSError(domain:"Performance", code:1, userInfo:[NSLocalizedDescriptionKey:detail?["detail"] as? String ?? detail?["error"] as? String ?? "Performance request failed."])
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let message: String
+            if statusCode == 404 {
+                message = "The Performance API is unavailable on the backend at port 8011. Close any older OmniVoice app/backend, reopen OmniVoice 3.7.0, and wait for Ready."
+            } else {
+                message = detail?["detail"] as? String ?? detail?["error"] as? String ??
+                    "Performance request failed with HTTP status \(statusCode)."
+            }
+            throw NSError(domain:"Performance", code:statusCode,
+                userInfo:[NSLocalizedDescriptionKey:message])
         }
         return try JSONDecoder().decode(T.self,from:data)
     }
 
     func preparePerformance() {
-        guard !performanceBusy, !isGenerating, !engineLabRunning, let reference = referenceURL else { return }
+        guard !performanceBusy, !isGenerating, !engineLabRunning else { return }
+        guard modelReady else {
+            errorMessage = performanceBackendUnavailableMessage
+            return
+        }
+        guard let reference = referenceURL else { return }
         guard let settings = generationFields(text:performanceText, pronunciations:performanceRules,
             language:cloneLanguage, matchInsideWords:performanceMatchInsideWords, allowDuration:false) else { return }
         let script = performanceText
@@ -156,7 +181,13 @@ struct PerformanceWorkspace: View {
                                     matchMode:model.performanceMatchInsideWords ? "substring" : "words",minimumHeight:180,performance:true)
                                 PronunciationRulesEditor(rules:$model.performanceRules,matchInsideWords:$model.performanceMatchInsideWords)
                                 Button("Prepare new production") { model.preparePerformance() }
-                                    .disabled(model.performanceBusy || model.isGenerating || model.engineLabRunning || model.referenceURL == nil || model.performanceText.isEmpty)
+                                    .disabled(model.performanceBusy || model.isGenerating || model.engineLabRunning || !model.modelReady || model.referenceURL == nil || model.performanceText.isEmpty)
+                                if !model.modelReady {
+                                    Text(model.status == "Incompatible backend"
+                                         ? "Close the older OmniVoice app/backend, reopen this build, and wait for Ready."
+                                         : "Performance preparation becomes available when OmniVoice finishes loading.")
+                                        .font(.caption).foregroundStyle(.orange)
+                                }
                                 Text("Prepare freezes a new production. Editing this draft or global settings never changes retained segments; prepare again to use those edits.")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
