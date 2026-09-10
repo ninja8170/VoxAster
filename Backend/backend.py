@@ -483,6 +483,7 @@ def run_f5(ref_path, ref_text, text, output_path, speed):
     ]
 
     env = os.environ.copy()
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
     result = subprocess.run(
@@ -820,6 +821,7 @@ def _launch_training_script(script, lock_fd):
 
     TRAIN_LOG_HANDLE = PERSONAL_LOG.open("w")
     env = os.environ.copy()
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PATH"] = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:" + env.get("PATH", "")
     env["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
@@ -871,6 +873,7 @@ def merge_into(checkpoint, stage):
     cmd = [str(TRAIN_VENV / "bin" / "omnivoice-merge-lora"),
         "--base_model", "k2-fsa/OmniVoice", "--lora_adapter", str(checkpoint), "--output_dir", str(stage)]
     env = os.environ.copy()
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PATH"] = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:" + env.get("PATH", "")
     proc = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=1800)
     if proc.returncode != 0:

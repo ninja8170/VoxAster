@@ -290,6 +290,17 @@ final class RecorderController: NSObject, ObservableObject, AVAudioRecorderDeleg
         elapsed = 0
     }
 }
+enum PythonBackendLaunch {
+    static func arguments(server: String) -> [String] { ["-B", server] }
+
+    static func environment(from base: [String: String]) -> [String: String] {
+        var environment = base
+        environment["PYTHONUNBUFFERED"] = "1"
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        return environment
+    }
+}
+
 final class AppModel: ObservableObject {
     @Published var selectedSection: AppSection = .clone
 
@@ -551,10 +562,9 @@ final class AppModel: ObservableObject {
 
         let p = Process()
         p.executableURL = URL(fileURLWithPath: python)
-        p.arguments = [server]
+        p.arguments = PythonBackendLaunch.arguments(server: server)
 
-        var env = ProcessInfo.processInfo.environment
-        env["PYTHONUNBUFFERED"] = "1"
+        var env = PythonBackendLaunch.environment(from: ProcessInfo.processInfo.environment)
 
         // Finder/LaunchServices apps do not reliably inherit the shell PATH.
         // Always expose Homebrew/system tools such as ffmpeg to the Python backend.

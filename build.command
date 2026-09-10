@@ -4,6 +4,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 OMNI_PYTHON="${OMNIVOICE_PYTHON:-$HOME/Documents/OmniVoice-Mac/.venv/bin/python}"
 BUILD_ROOT="${1:-$HERE/.build}"
 APP="$BUILD_ROOT/OmniVoice.app"
+rm -rf "$APP" "$BUILD_ROOT/OmniVoice.iconset"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$HERE"/Backend/*.py "$HERE"/Backend/runtime.json "$APP/Contents/Resources/"
 "$OMNI_PYTHON" -B - "$HERE/Backend/runtime.json" "$APP/Contents/Info.plist" <<'PY'

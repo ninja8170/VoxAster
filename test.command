@@ -12,6 +12,24 @@ for script in build.command install.command test.command setup-personal-training
 done
 "$HERE/build.command" "$TEST_BUILD/release"
 codesign --verify --deep --strict "$TEST_BUILD/release/OmniVoice.app"
+APP="$TEST_BUILD/release/OmniVoice.app"
+STATE_BEFORE="$TEST_BUILD/bundle-state-before.txt"
+STATE_AFTER="$TEST_BUILD/bundle-state-after.txt"
+find "$APP/Contents" -type f -exec shasum -a 256 {} \; | sort > "$STATE_BEFORE"
+test -z "$(find "$APP/Contents" \( -type d -name __pycache__ -o -type f -name '*.pyc' \) -print -quit)"
+mkdir -p "$TEST_BUILD/bytecode-probe-data"
+(
+  cd "$APP/Contents/Resources"
+  OMNIVOICE_DATA_ROOT="$TEST_BUILD/bytecode-probe-data" \
+  PYTHONPATH="$APP/Contents/Resources" \
+  PYTHONDONTWRITEBYTECODE=1 \
+  "$OMNI_PYTHON" -B -c 'import backend, generation, performance, performance_audio, performance_script, provenance, speech_text, training_safety'
+)
+test -z "$(find "$APP/Contents" \( -type d -name __pycache__ -o -type f -name '*.pyc' \) -print -quit)"
+find "$APP/Contents" -type f -exec shasum -a 256 {} \; | sort > "$STATE_AFTER"
+cmp "$STATE_BEFORE" "$STATE_AFTER"
+codesign --verify --deep --strict "$APP"
+echo "PASS: production Python launch configuration preserves the signed bundle"
 "$OMNI_PYTHON" -B - "$HERE/Backend/runtime.json" "$TEST_BUILD/release/OmniVoice.app" <<'PY'
 import json,plistlib,sys
 from pathlib import Path

@@ -75,6 +75,9 @@ struct Phase1Tests {
         try Data("reference".utf8).write(to: reference)
         let output = root.appendingPathComponent("output.wav").path
         let model = AppModel(startServices: false, storageRoot: root, session: session)
+        check(PythonBackendLaunch.arguments(server: "/bundle/backend.py") == ["-B", "/bundle/backend.py"], "production backend launches Python with -B")
+        let pythonEnvironment = PythonBackendLaunch.environment(from: ["EXISTING": "kept"])
+        check(pythonEnvironment["PYTHONDONTWRITEBYTECODE"] == "1" && pythonEnvironment["PYTHONUNBUFFERED"] == "1" && pythonEnvironment["EXISTING"] == "kept", "production backend disables bytecode writes without dropping environment")
         model.modelReady = true
         model.autoPlay = false
         model.referenceURL = reference
