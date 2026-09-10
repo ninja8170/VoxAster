@@ -311,6 +311,18 @@ final class AppModel: ObservableObject {
     @Published var runtimeProvenance: [String: String] = [:]
     @Published var generationSeed = 0
     @Published var denoiseOutput = true
+    @Published var useDuration = false
+    @Published var targetDuration = 10.0
+    @Published var timeShift = 0.1
+    @Published var positionTemperature = 5.0
+    @Published var classTemperature = 0.0
+    @Published var layerPenaltyFactor = 5.0
+    @Published var cloneMatchInsideWords = false
+    @Published var longFormMatchInsideWords = false
+    @Published var designPronunciationRules = ""
+    @Published var designMatchInsideWords = false
+    var engineLabSupportsNative: Bool { engineLabEngineA != "F5-TTS" && engineLabEngineB != "F5-TTS" }
+
 
     // Reference Analyzer / Auto Tune
     @Published var referenceAnalyzing = false
@@ -560,7 +572,7 @@ final class AppModel: ObservableObject {
                     guard let data,
                           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                           json["ok"] as? Bool == true,
-                          json["generation_contract"] as? Int == 1,
+                          json["generation_contract"] as? Int == 2,
                           let provenance = json["provenance"] as? [String: String] else {
                         self?.modelReady = false
                         self?.status = "Incompatible backend"
@@ -637,7 +649,8 @@ final class AppModel: ObservableObject {
         }
 
         guard let fields = generationFields(text: engineLabText, pronunciations: clonePronunciationRules,
-                                            language: cloneLanguage) else {
+                                            language: cloneLanguage, matchInsideWords: cloneMatchInsideWords,
+                                            nativeAdvanced: engineLabSupportsNative) else {
             engineLabRunning = false
             return
         }
@@ -1132,13 +1145,20 @@ final class AppModel: ObservableObject {
 
     func generationFields(text: String, pronunciations: String = "", language: String = "Auto detect",
                           instruct: String = "", segments: [String]? = nil,
-                          retryIndex: Int? = nil) -> [String: String]? {
+                          retryIndex: Int? = nil, matchInsideWords: Bool = false,
+                          nativeAdvanced: Bool = true, allowDuration: Bool = true) -> [String: String]? {
         do {
             guard steps.isFinite, (8...64).contains(steps) else { throw GenerationRequest.RequestError.invalid }
             return try GenerationRequest(text: text, refText: referenceText,
                 pronunciations: pronunciations, language: language, instruct: instruct,
                 speed: speed, steps: Int(steps), guidance: guidance,
-                seed: generationSeed, denoise: denoiseOutput, count: variantCount,
+                seed: generationSeed, denoise: denoiseOutput,
+                duration: nativeAdvanced && allowDuration && useDuration ? targetDuration : nil,
+                timeShift: nativeAdvanced ? timeShift : 0.1,
+                positionTemperature: nativeAdvanced ? positionTemperature : 5,
+                classTemperature: nativeAdvanced ? classTemperature : 0,
+                layerPenaltyFactor: nativeAdvanced ? layerPenaltyFactor : 5,
+                pronunciationMode: matchInsideWords ? "substring" : "words", count: variantCount,
                 segments: segments, retryIndex: retryIndex).fields()
         } catch {
             errorMessage = error.localizedDescription
@@ -1200,13 +1220,15 @@ final class AppModel: ObservableObject {
         var body=Data()
         func f(_ n:String,_ v:String){body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(n)\"\r\n\r\n\(v)\r\n".data(using:.utf8)!)}
         guard let fields = generationFields(text: cloneText, pronunciations: clonePronunciationRules,
-                                            language: cloneLanguage) else { isGenerating = false; return }
+                                            language: cloneLanguage, matchInsideWords: cloneMatchInsideWords) else { isGenerating = false; return }
         for (name, value) in fields { f(name, value) }
         if let d=try? Data(contentsOf:ref){body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"ref_audio\"; filename=\"\(ref.lastPathComponent)\"\r\nContent-Type: application/octet-stream\r\n\r\n".data(using:.utf8)!);body.append(d);body.append("\r\n".data(using:.utf8)!)}
         body.append("--\(boundary)--\r\n".data(using:.utf8)!);req.httpBody=body
         session.dataTask(with:req){[weak self] data,_,_ in DispatchQueue.main.async{
             self?.isGenerating=false
-            guard let data,let j=try? JSONSerialization.jsonObject(with:data) as? [String:Any],let paths=j["outputs"] as? [String] else{self?.errorMessage="Variant generation failed.";return}
+            guard let data, let j = try? JSONSerialization.jsonObject(with:data) as? [String:Any] else { self?.errorMessage="Variant generation failed."; return }
+            if let error = j["error"] as? String ?? j["detail"] as? String { self?.errorMessage=error; return }
+            guard let paths = j["outputs"] as? [String] else { self?.errorMessage="Variant generation failed."; return }
             self?.variantURLs=paths.map{URL(fileURLWithPath:$0)}
         }}.resume()
     }
@@ -1220,7 +1242,7 @@ final class AppModel: ObservableObject {
         let sourceIDs = productionChunks.map(\.id)
         let sourceText = sourceSegments.joined(separator: " ")
         guard let fields = generationFields(text: sourceText, pronunciations: pronunciationRules,
-            segments: sourceSegments, retryIndex: retryIndex) else { return }
+            segments: sourceSegments, retryIndex: retryIndex, matchInsideWords: longFormMatchInsideWords, allowDuration: false) else { return }
         longFormOutputURL = nil
         if let retryIndex { productionChunks[retryIndex].state = "Generating" }
         errorMessage = nil
@@ -1305,18 +1327,27 @@ final class AppModel: ObservableObject {
         }.resume()
     }
 
-    let expressionTags: [(String, String)] = [
-        ("Laugh", "[laughter]"),
-        ("Sigh", "[sigh]"),
-        ("Confirm", "[confirmation-en]"),
-        ("Question", "[question-en]"),
-        ("Surprise", "[surprise-oh]"),
-        ("Hmm", "[dissatisfaction-hnn]")
-    ]
+    func resetGenerationDefaults() {
+        speed = 1; steps = 32; guidance = 2; denoiseOutput = true; generationSeed = 0
+        useDuration = false; targetDuration = 10
+        timeShift = 0.1; positionTemperature = 5; classTemperature = 0; layerPenaltyFactor = 5
+        preset = "Natural"
+    }
 
-    func insertExpression(_ tag: String) {
-        let spacer = cloneText.isEmpty || cloneText.hasSuffix(" ") ? "" : " "
-        cloneText += spacer + tag + " "
+    func inspectSpeech(text: String, rules: String, matchMode: String) async throws -> SpeechInspection {
+        let boundary = UUID().uuidString
+        var request = URLRequest(url: URL(string:"http://127.0.0.1:8011/preview-speech")!)
+        request.httpMethod = "POST"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField:"Content-Type")
+        var body = Data()
+        for (name, value) in ["text":text, "pronunciations":rules, "pronunciation_mode":matchMode] {
+            body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n".data(using:.utf8)!)
+        }
+        body.append("--\(boundary)--\r\n".data(using:.utf8)!)
+        request.httpBody = body
+        let (data, response) = try await session.data(for:request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw GenerationRequest.RequestError.invalid }
+        return try JSONDecoder().decode(SpeechInspection.self, from:data)
     }
 
     func applyDesignPreset(_ name: String) {
@@ -1516,7 +1547,7 @@ final class AppModel: ObservableObject {
         multipartGenerate(
             endpoint: "generate-design",
             text: designText,
-            extraFields: ["instruct": attrs.joined(separator: ", ")],
+            extraFields: ["instruct": attrs.joined(separator: ", "), "pronunciations": designPronunciationRules],
             audioURL: nil,
             mode: designMode == "Auto" ? "Auto Voice" : "Voice Design"
         )
@@ -1547,7 +1578,8 @@ final class AppModel: ObservableObject {
         guard let fields = generationFields(text: text,
             pronunciations: extraFields["pronunciations"] ?? "",
             language: extraFields["language"] ?? "Auto detect",
-            instruct: extraFields["instruct"] ?? "") else { isGenerating = false; return }
+            instruct: extraFields["instruct"] ?? "",
+            matchInsideWords: endpoint == "generate-design" ? designMatchInsideWords : cloneMatchInsideWords) else { isGenerating = false; return }
         for (name, value) in fields { appendField(name, value) }
 
         if let audioURL, let data = try? Data(contentsOf: audioURL) {
@@ -1829,10 +1861,12 @@ struct CloneWorkspace: View {
                 }
                 .scrollIndicators(.hidden)
 
-                VStack(spacing: 14) {
-                    ReferenceAnalysisCard()
-                    GenerationSettingsCard(mode: .clone)
-                    RecentCard()
+                ScrollView {
+                    VStack(spacing: 14) {
+                        ReferenceAnalysisCard()
+                        GenerationSettingsCard(mode: .clone)
+                        RecentCard()
+                    }
                 }
                 .frame(width: 320)
             }
@@ -2011,55 +2045,19 @@ struct CloneTextCard: View {
                         ForEach([
                             "Auto detect", "English", "French", "Spanish", "German",
                             "Italian", "Portuguese", "Dutch", "Polish", "Russian",
-                            "Arabic", "Hindi", "Japanese", "Korean", "Chinese",
-                            "Other supported language"
+                            "Arabic", "Hindi", "Japanese", "Korean", "Chinese"
                         ], id: \.self) { Text($0).tag($0) }
                     }
                     .frame(width: 220)
                 }
 
-                Text("OmniVoice detects the language from the text itself. Choose a common language here for your workflow, or type any other supported language directly.")
+                Text("Auto detect leaves language unspecified. A selected language is forwarded to OmniVoice.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
 
-                TextEditor(text: $model.cloneText)
-                    .font(.body)
-                    .scrollContentBackground(.hidden)
-                    .padding(8)
-                    .frame(height: 110)
-                    .background(Color.black.opacity(0.18))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Expression")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-
-                    HStack(spacing: 7) {
-                        ForEach(model.expressionTags, id: \.1) { item in
-                            Button(item.0) { model.insertExpression(item.1) }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                        }
-                    }
-                }
-
-                DisclosureGroup("Pronunciation Dictionary") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("One rule per line: original=replacement. Useful for names, brands and phoneme markup.")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        TextEditor(text: $model.clonePronunciationRules)
-                            .font(.system(size: 12, design: .monospaced))
-                            .scrollContentBackground(.hidden)
-                            .padding(7)
-                            .frame(height: 76)
-                            .background(Color.black.opacity(0.16))
-                            .clipShape(RoundedRectangle(cornerRadius: 9))
-                    }
-                    .padding(.top, 7)
-                }
-                .font(.caption.weight(.semibold))
+                SpeechEditor(text:$model.cloneText, rules:model.clonePronunciationRules,
+                             matchMode:model.cloneMatchInsideWords ? "substring" : "words")
+                PronunciationRulesEditor(rules:$model.clonePronunciationRules, matchInsideWords:$model.cloneMatchInsideWords)
 
                 HStack {
                     Button("Clear") { model.cloneText = "" }
@@ -2345,13 +2343,9 @@ struct VoiceDesignWorkspace: View {
                             VStack(alignment: .leading, spacing: 12) {
                                 StepHeader(number: 2, title: "Text to Speak", subtitle: "Enter what the designed voice should say.")
 
-                                TextEditor(text: $model.designText)
-                                    .font(.body)
-                                    .scrollContentBackground(.hidden)
-                                    .padding(8)
-                                    .frame(height: 150)
-                                    .background(Color.black.opacity(0.18))
-                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                                SpeechEditor(text:$model.designText, rules:model.designPronunciationRules,
+                                    matchMode:model.designMatchInsideWords ? "substring" : "words", minimumHeight:150)
+                                PronunciationRulesEditor(rules:$model.designPronunciationRules, matchInsideWords:$model.designMatchInsideWords)
                             }
                         }
 
@@ -2361,9 +2355,11 @@ struct VoiceDesignWorkspace: View {
                 }
                 .scrollIndicators(.hidden)
 
-                VStack(spacing: 14) {
-                    GenerationSettingsCard(mode: .design)
-                    RecentCard()
+                ScrollView {
+                    VStack(spacing: 14) {
+                        GenerationSettingsCard(mode: .design)
+                        RecentCard()
+                    }
                 }
                 .frame(width: 300)
             }
@@ -2594,9 +2590,8 @@ struct LongFormWorkspace: View {
                             VStack(alignment: .leading, spacing: 12) {
                                 StepHeader(number: 1, title: "Script",
                                            subtitle: "Paste a full script. It will be split at natural sentence boundaries.")
-                                TextEditor(text: $model.longFormText)
-                                    .scrollContentBackground(.hidden).padding(8).frame(minHeight: 300)
-                                    .background(Color.black.opacity(0.18)).clipShape(RoundedRectangle(cornerRadius: 12))
+                                SpeechEditor(text:$model.longFormText, rules:model.pronunciationRules,
+                                    matchMode:model.longFormMatchInsideWords ? "substring" : "words", minimumHeight:300)
                                 HStack {
                                     Button("Paste") { if let s = NSPasteboard.general.string(forType: .string) { model.longFormText = s } }
                                     Button("Clear") { model.longFormText = "" }
@@ -2609,9 +2604,7 @@ struct LongFormWorkspace: View {
                             VStack(alignment: .leading, spacing: 12) {
                                 StepHeader(number: 2, title: "Pronunciation Notes",
                                            subtitle: "Optional replacements, one per line: original = replacement")
-                                TextEditor(text: $model.pronunciationRules)
-                                    .font(.body.monospaced()).scrollContentBackground(.hidden).padding(8).frame(height: 110)
-                                    .background(Color.black.opacity(0.18)).clipShape(RoundedRectangle(cornerRadius: 12))
+                                PronunciationRulesEditor(rules:$model.pronunciationRules, matchInsideWords:$model.longFormMatchInsideWords)
                             }
                         }
                         Card {
@@ -2633,11 +2626,11 @@ struct LongFormWorkspace: View {
                                                 Text(chunk.state).font(.caption2).foregroundStyle(chunk.state=="Complete" ? .green : .secondary)
                                                 Button { model.retryChunk(i) } label:{ Image(systemName:"arrow.clockwise") }.help("Retry this section")
                                             }
-                                            TextEditor(text: Binding(
+                                            SpeechEditor(text: Binding(
                                                 get:{ model.productionChunks.indices.contains(i) ? model.productionChunks[i].text : "" },
                                                 set:{ model.updateChunk(i,text:$0) }
-                                            )).scrollContentBackground(.hidden).frame(height:72)
-                                              .padding(6).background(Color.black.opacity(0.15)).clipShape(RoundedRectangle(cornerRadius:8))
+                                            ), rules:model.pronunciationRules,
+                                               matchMode:model.longFormMatchInsideWords ? "substring" : "words", minimumHeight:72)
                                         }
                                         if i < model.productionChunks.count-1 { Divider().opacity(0.2) }
                                     }
@@ -2663,43 +2656,47 @@ struct LongFormWorkspace: View {
                         }
                     }.padding(.bottom, 24)
                 }
-                VStack(spacing: 14) {
-                    Card {
-                        VStack(alignment: .leading, spacing: 14) {
-                            Label("Long Form Settings", systemImage: "text.document").font(.headline)
-                            Picker("Preset", selection: $model.preset) {
-                                ForEach(["Fast Preview","Natural","Narration","Maximum Quality","Auto Tuned"], id: \.self) { Text($0).tag($0) }
-                            }.onChange(of: model.preset) { _, v in
-                    if v != "Auto Tuned" { model.applyPreset(v) }
-                }
-                            SliderRow(title: "Speed", value: $model.speed, range: 0.5...1.5, display: String(format: "%.2f", model.speed))
-                            SliderRow(title: "Steps", value: $model.steps, range: 8...64, display: "\(Int(model.steps))")
-                            Divider().opacity(0.3)
-                            HStack {
-                                Text("Reference")
-                                Spacer()
-                                Text(model.referenceURL?.deletingPathExtension().lastPathComponent ?? "None")
-                                    .lineLimit(1).foregroundStyle(model.referenceURL == nil ? .red : .green)
-                            }.font(.caption)
-                            if model.isGenerating {
-                                ProgressView(value: model.longFormProgress)
-                                Text(model.longFormStatus).font(.caption).foregroundStyle(.secondary)
-                            }
-                            Button(action: model.generateLongForm) {
+                ScrollView {
+                    VStack(spacing: 14) {
+                        Card {
+                            VStack(alignment: .leading, spacing: 14) {
+                                Label("Long Form Settings", systemImage: "text.document").font(.headline)
+                                NativeAdvancedControls(allowDuration:false)
+                                Picker("Preset", selection: $model.preset) {
+                                    ForEach(["Fast Preview","Natural","Narration","Maximum Quality","Auto Tuned"], id: \.self) { Text($0).tag($0) }
+                                }.onChange(of: model.preset) { _, v in
+                                    if v != "Auto Tuned" { model.applyPreset(v) }
+                                }
+                                SliderRow(title: "Speed", value: $model.speed, range: 0.5...1.5, display: String(format: "%.2f", model.speed))
+                                SliderRow(title: "Steps", value: $model.steps, range: 8...64, display: "\(Int(model.steps))")
+                                Divider().opacity(0.3)
                                 HStack {
-                                    if model.isGenerating { ProgressView().controlSize(.small) }
-                                    Image(systemName: "waveform.badge.plus")
-                                    Text(model.isGenerating ? "Generating…" : "Generate Full Voiceover").bold()
+                                    Text("Reference")
                                     Spacer()
-                                }.padding(.horizontal, 14).frame(height: 50)
-                                 .background(LinearGradient(colors: [OVTheme.accent,OVTheme.accent2], startPoint: .leading, endPoint: .trailing))
-                                 .clipShape(RoundedRectangle(cornerRadius: 12))
-                            }.buttonStyle(.plain)
-                             .disabled(model.isGenerating || !model.modelReady || model.referenceURL == nil || model.longFormText.isEmpty)
-                            Text("Choose the voice for this production here.").font(.caption2).foregroundStyle(.secondary)
+                                    Text(model.referenceURL?.deletingPathExtension().lastPathComponent ?? "None")
+                                        .lineLimit(1).foregroundStyle(model.referenceURL == nil ? .red : .green)
+                                }.font(.caption)
+                                if model.isGenerating {
+                                    ProgressView(value: model.longFormProgress)
+                                    Text(model.longFormStatus).font(.caption).foregroundStyle(.secondary)
+                                }
+                                Button(action: model.generateLongForm) {
+                                    HStack {
+                                        if model.isGenerating { ProgressView().controlSize(.small) }
+                                        Image(systemName: "waveform.badge.plus")
+                                        Text(model.isGenerating ? "Generating…" : "Generate Full Voiceover").bold()
+                                        Spacer()
+                                    }.padding(.horizontal, 14).frame(height: 50)
+                                     .background(LinearGradient(colors: [OVTheme.accent,OVTheme.accent2], startPoint: .leading, endPoint: .trailing))
+                                     .clipShape(RoundedRectangle(cornerRadius: 12))
+                                }.buttonStyle(.plain)
+                                 .disabled(model.isGenerating || !model.modelReady || model.referenceURL == nil || model.longFormText.isEmpty)
+                                Text("Choose the voice for this production here.").font(.caption2).foregroundStyle(.secondary)
+                            }
                         }
                     }
-                }.frame(width: 300)
+                }
+                .frame(width: 300)
             }.padding(18)
         }
     }
@@ -2941,12 +2938,20 @@ struct EngineLabWorkspace: View {
                                     subtitle: "Speed is shared. OmniVoice controls apply only to OmniVoice; F5 comparisons require plain text and no pronunciation overrides."
                                 )
 
+                                if model.engineLabSupportsNative {
+                                    SpeechEditor(text:$model.engineLabText, rules:model.clonePronunciationRules,
+                                        matchMode:model.cloneMatchInsideWords ? "substring" : "words")
+                                    PronunciationRulesEditor(rules:$model.clonePronunciationRules, matchInsideWords:$model.cloneMatchInsideWords)
+                                } else {
                                 TextEditor(text: $model.engineLabText)
                                     .scrollContentBackground(.hidden)
                                     .padding(8)
                                     .frame(height: 150)
                                     .background(Color.black.opacity(0.18))
                                     .clipShape(RoundedRectangle(cornerRadius: 12))
+                                    Text("F5 accepts plain text. Clear Clone pronunciation rules and use Auto detect before comparing; OmniVoice advanced settings use defaults in mixed-engine comparisons.")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
                             }
                         }
 
@@ -2996,119 +3001,125 @@ struct EngineLabWorkspace: View {
                     .padding(.bottom, 24)
                 }
 
-                VStack(spacing: 14) {
-                    Card {
-                        VStack(alignment: .leading, spacing: 14) {
-                            Label("Engine Matchup", systemImage: "cpu")
-                                .font(.headline)
-
-                            VStack(alignment: .leading, spacing: 7) {
-                                Text("Engine 1")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                Picker("Engine 1", selection: $model.engineLabEngineA) {
-                                    ForEach(model.engineLabAvailableEngines, id: \.self) { engine in
-                                        Text(engine).tag(engine)
-                                    }
-                                }
-                                .labelsHidden()
-                                .frame(maxWidth: .infinity)
-                            }
-
-                            Image(systemName: "arrow.up.arrow.down")
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity)
-
-                            VStack(alignment: .leading, spacing: 7) {
-                                Text("Engine 2")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                Picker("Engine 2", selection: $model.engineLabEngineB) {
-                                    ForEach(model.engineLabAvailableEngines, id: \.self) { engine in
-                                        Text(engine).tag(engine)
-                                    }
-                                }
-                                .labelsHidden()
-                                .frame(maxWidth: .infinity)
-                            }
-
-                            if model.engineLabEngineA == model.engineLabEngineB {
-                                Label("Choose two different engines.", systemImage: "exclamationmark.triangle.fill")
-                                    .font(.caption)
-                                    .foregroundStyle(.orange)
-                            }
-
-                            Divider().opacity(0.25)
-
-                            VStack(alignment: .leading, spacing: 8) {
-                                ForEach(model.engineLabAvailableEngines, id: \.self) { engine in
-                                    HStack {
-                                        Circle().fill(Color.green).frame(width: 7, height: 7)
-                                        Text(engine).font(.caption)
-                                        Spacer()
-                                        Text("READY").font(.caption2.bold()).foregroundStyle(.green)
-                                    }
-                                }
-                            }
-
-                            Button(action: model.runEngineComparison) {
-                                HStack {
-                                    if model.engineLabRunning {
-                                        ProgressView().controlSize(.small)
-                                    }
-                                    Image(systemName: "testtube.2")
-                                    Text(model.engineLabRunning ? "Comparing…" : "Generate A / B").bold()
-                                    Spacer()
-                                }
-                                .padding(.horizontal, 14)
-                                .frame(height: 50)
-                                .background(
-                                    LinearGradient(
-                                        colors: [OVTheme.accent, OVTheme.accent2],
-                                        startPoint: .leading,
-                                        endPoint: .trailing
-                                    )
-                                )
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(
-                                model.engineLabRunning ||
-                                model.referenceURL == nil ||
-                                model.engineLabEngineA == model.engineLabEngineB ||
-                                model.engineLabAvailableEngines.count < 2
-                            )
-
-                            Text(model.engineLabStatus)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-
-                    if model.engineLabA != nil {
+                ScrollView {
+                    VStack(spacing: 14) {
                         Card {
-                            VStack(alignment: .leading, spacing: 12) {
-                                Text("Reveal").font(.headline)
+                            VStack(alignment: .leading, spacing: 14) {
+                                Label("Engine Matchup", systemImage: "cpu")
+                                    .font(.headline)
 
-                                Text("Choose A or B first so the comparison stays blind.")
+                                VStack(alignment: .leading, spacing: 7) {
+                                    Text("Engine 1")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Picker("Engine 1", selection: $model.engineLabEngineA) {
+                                        ForEach(model.engineLabAvailableEngines, id: \.self) { engine in
+                                            Text(engine).tag(engine)
+                                        }
+                                    }
+                                    .labelsHidden()
+                                    .frame(maxWidth: .infinity)
+                                }
+
+                                Image(systemName: "arrow.up.arrow.down")
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity)
+
+                                VStack(alignment: .leading, spacing: 7) {
+                                    Text("Engine 2")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Picker("Engine 2", selection: $model.engineLabEngineB) {
+                                        ForEach(model.engineLabAvailableEngines, id: \.self) { engine in
+                                            Text(engine).tag(engine)
+                                        }
+                                    }
+                                    .labelsHidden()
+                                    .frame(maxWidth: .infinity)
+                                }
+
+                                if model.engineLabEngineA == model.engineLabEngineB {
+                                    Label("Choose two different engines.", systemImage: "exclamationmark.triangle.fill")
+                                        .font(.caption)
+                                        .foregroundStyle(.orange)
+                                }
+
+                                Divider().opacity(0.25)
+
+                                VStack(alignment: .leading, spacing: 8) {
+                                    ForEach(model.engineLabAvailableEngines, id: \.self) { engine in
+                                        HStack {
+                                            Circle().fill(Color.green).frame(width: 7, height: 7)
+                                            Text(engine).font(.caption)
+                                            Spacer()
+                                            Text("READY").font(.caption2.bold()).foregroundStyle(.green)
+                                        }
+                                    }
+                                }
+
+                                if model.engineLabSupportsNative {
+                                    NativeAdvancedControls()
+                                }
+
+                                Button(action: model.runEngineComparison) {
+                                    HStack {
+                                        if model.engineLabRunning {
+                                            ProgressView().controlSize(.small)
+                                        }
+                                        Image(systemName: "testtube.2")
+                                        Text(model.engineLabRunning ? "Comparing…" : "Generate A / B").bold()
+                                        Spacer()
+                                    }
+                                    .padding(.horizontal, 14)
+                                    .frame(height: 50)
+                                    .background(
+                                        LinearGradient(
+                                            colors: [OVTheme.accent, OVTheme.accent2],
+                                            startPoint: .leading,
+                                            endPoint: .trailing
+                                        )
+                                    )
+                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(
+                                    model.engineLabRunning ||
+                                    model.referenceURL == nil ||
+                                    model.engineLabEngineA == model.engineLabEngineB ||
+                                    model.engineLabAvailableEngines.count < 2
+                                )
+
+                                Text(model.engineLabStatus)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
+                            }
+                        }
 
-                                Button("Reveal Engines") {
-                                    model.revealEngineComparison()
-                                }
-                                .disabled(model.engineLabWinner == nil)
+                        if model.engineLabA != nil {
+                            Card {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    Text("Reveal").font(.headline)
 
-                                if model.engineLabRevealed {
-                                    Divider().opacity(0.25)
-                                    Text("A  •  \(model.engineLabMap["A"] ?? "Unknown")")
-                                    Text("B  •  \(model.engineLabMap["B"] ?? "Unknown")")
+                                    Text("Choose A or B first so the comparison stays blind.")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
 
-                                    if let winner = model.engineLabWinner,
-                                       let engine = model.engineLabMap[winner] {
-                                        Label("Winner: \(engine)", systemImage: "trophy.fill")
-                                            .font(.headline)
-                                            .foregroundStyle(.green)
+                                    Button("Reveal Engines") {
+                                        model.revealEngineComparison()
+                                    }
+                                    .disabled(model.engineLabWinner == nil)
+
+                                    if model.engineLabRevealed {
+                                        Divider().opacity(0.25)
+                                        Text("A  •  \(model.engineLabMap["A"] ?? "Unknown")")
+                                        Text("B  •  \(model.engineLabMap["B"] ?? "Unknown")")
+
+                                        if let winner = model.engineLabWinner,
+                                           let engine = model.engineLabMap[winner] {
+                                            Label("Winner: \(engine)", systemImage: "trophy.fill")
+                                                .font(.headline)
+                                                .foregroundStyle(.green)
+                                        }
                                     }
                                 }
                             }
@@ -3870,37 +3881,9 @@ struct GenerationSettingsCard: View {
                 SliderRow(title: "Steps", value: $model.steps, range: 8...64, display: "\(Int(model.steps))")
                 SliderRow(title: "Guidance", value: $model.guidance, range: 0...4, display: String(format: "%.1f", model.guidance))
 
-                DisclosureGroup("Advanced") {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Toggle("Denoise output", isOn: $model.denoiseOutput)
-
-                        HStack {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text("Seed")
-                                    .font(.caption.weight(.semibold))
-                                Text(model.generationSeed == 0 ? "Random every generation" : "Repeatable generation")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-
-                            Spacer()
-
-                            TextField(
-                                "0",
-                                value: $model.generationSeed,
-                                formatter: NumberFormatter()
-                            )
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 84)
-                        }
-
-                        Text("Seed 0 is random. Use the same non-zero seed to make A/B parameter tests more repeatable.")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.top, 8)
-                }
-                .font(.caption.weight(.semibold))
+                Text("Speed adjusts overall pacing; Guidance adjusts conditioning strength, not emotional intensity.")
+                    .font(.caption2).foregroundStyle(.secondary)
+                NativeAdvancedControls()
 
                 Button {
                     if mode == .clone { model.generateClone() }

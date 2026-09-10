@@ -6,11 +6,11 @@ OmniVoice Mac turns the open-source [k2-fsa OmniVoice](https://github.com/k2-fsa
 
 Instead of operating OmniVoice through scripts or a browser interface, OmniVoice Mac provides a complete SwiftUI studio for creating voices, generating speech, managing projects, benchmarking engines and training personalised LoRA voice models directly on Apple Silicon.
 
-> **Current version:** v3.5.1
+> **Current version:** v3.6.0
 > **Platform:** macOS / Apple Silicon  
 > **Status:** Active development
 
-Phase 1 reconciles the Native 3.5 distribution, fixes generation forwarding and editable Long Form requests, and exposes pinned runtime provenance. See [the Phase 1 contract, build/test instructions and limitations](PHASE1.md). Build with `./build.command`; verify with `./test.command`. These commands do not install or upgrade dependencies.
+Phase 2 adds all 13 verified native vocal events, cursor insertion, pronunciation authoring and preview, text safety, and native advanced controls. See [the Phase 2 reference and boundaries](PHASE2.md) and [the accepted Phase 1 generation contract](PHASE1.md). Build with `./build.command`; verify with `./test.command`. These commands do not install or upgrade dependencies.
 
 ---
 
@@ -48,16 +48,16 @@ Clone a voice from a short reference recording and generate new speech locally.
 
 ### Expression controls
 
-Supported expressive speech controls are exposed directly in the UI, including:
+Verified native vocal events are inserted at the current cursor through buttons and grouped menus:
 
 - Laughter
 - Sigh
 - Confirmation
-- Question
-- Surprise
-- Dissatisfaction / hesitation
+- Question: En, Ah, Oh, Ei, Yi
+- Surprise: Ah, Oh, Wa, Yo
+- Dissatisfaction / Hmm
 
-No need to manually remember expression tokens.
+These are vocal events, not persistent emotional modes. All 13 exact tokens, pronunciation rules, validation behavior and route boundaries are documented in [PHASE2.md](PHASE2.md).
 
 ---
 
@@ -180,7 +180,7 @@ Both receive:
 - the same reference voice
 - the same script
 - the same speed
-- the same generation settings
+- supported generation settings (F5 receives only Speed; native markup and controls are restricted)
 
 The outputs are then randomized as **Take A** and **Take B**.
 
@@ -316,7 +316,13 @@ OmniVoice Mac exposes the important inference controls while providing simpler p
 
 - Speed
 - Diffusion steps
-- Guidance
+- Guidance (conditioning strength)
+- Denoise and Seed
+- Target duration (individual passages/Variants; overrides Speed-based estimation)
+- Time shift, position temperature, token temperature and codebook layer penalty
+- Reset to native defaults
+
+See [the control table and engine/route boundaries](PHASE2.md#generation-parameters-and-boundaries).
 
 ---
 
@@ -410,17 +416,21 @@ OmniVoice-Mac/
 ├── Backend/
 │   ├── backend.py
 │   ├── generation.py
+│   ├── speech_text.py
 │   ├── provenance.py
 │   └── runtime.json
 │
 ├── Sources/
 │   ├── OmniVoice.swift
-│   └── GenerationRequest.swift
+│   ├── GenerationRequest.swift
+│   ├── SpeechEditor.swift
+│   └── NativeAdvancedControls.swift
 │
 ├── Tests/
 ├── build.command
 ├── test.command
 ├── PHASE1.md
+├── PHASE2.md
 ├── install.command
 ├── setup-personal-training.command
 ├── repair-mac-training.command

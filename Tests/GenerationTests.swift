@@ -1,4 +1,6 @@
 import Foundation
+import SwiftUI
+import AppKit
 
 final class CaptureProtocol: URLProtocol {
     static var captured: [[String: String]] = []
@@ -148,6 +150,111 @@ struct Phase1Tests {
         check((try? invalid.fields()) == nil, "invalid settings rejected")
         invalid = GenerationRequest(text:"valid", segments:[""], retryIndex:0)
         check((try? invalid.fields()) == nil, "empty segments rejected")
+        // Native event catalog and the exact insertion path used by toolbar buttons.
+        let expected = "laughter sigh confirmation-en question-en question-ah question-oh question-ei question-yi surprise-ah surprise-oh surprise-wa surprise-yo dissatisfaction-hnn".split(separator:" ").map(String.init)
+        check(NativeEvent.all.map(\.name) == expected, "all 13 verified events and no sniff")
+        check(NativeEvent.all.filter { $0.group == "Question" }.count == 5, "five Question variants")
+        check(NativeEvent.all.filter { $0.group == "Surprise" }.count == 4, "four Surprise variants")
+        for event in NativeEvent.all {
+            check(NativeEvent.isValid(event.token), "manual native token accepted")
+            check(!NativeEvent.isValid(event.token.uppercased()), "exact case sensitivity")
+            let inserted = SpeechInsertion.insert(event.token, into:"Setup. Punchline.", selection:NSRange(location:7,length:0))!
+            check(inserted.0 == "Setup. " + event.token + " Punchline.", "event inserted at cursor, not end")
+            check(inserted.1.location == 8 + event.token.utf16.count, "caret follows inserted event")
+        }
+        let selected = SpeechInsertion.insert("[B EY1 S]", into:"The bass.", selection:NSRange(location:4,length:4))!
+        check(selected.0 == "The [B EY1 S].", "selected word replaced with phonemes")
+        check(SpeechInsertion.insert("[sigh]", into:"Hi", selection:NSRange(location:0,length:0))!.0 == "[sigh] Hi", "start insertion")
+        check(SpeechInsertion.insert("[sigh]", into:"Hi", selection:NSRange(location:2,length:0))!.0 == "Hi [sigh] ", "end insertion")
+        check(SpeechInsertion.insert("[sigh]", into:"", selection:NSRange(location:99,length:0))!.0 == "[sigh] ", "stale cursor after Clear is clamped")
+        check(SpeechInsertion.insert("[sigh]", into:"😀 hi", selection:NSRange(location:3,length:0))!.0 == "😀 [sigh] hi", "UTF-16 cursor insertion")
+        check(SpeechInsertion.insert("[sigh]", into:"😀", selection:NSRange(location:1,length:0)) == nil, "invalid surrogate boundary rejected")
+        var boundText = "Setup. Punchline."
+        var boundSelection = NSRange(location:0,length:0)
+        let editor = CursorTextEditor(text:Binding(get:{boundText},set:{boundText=$0}), selection:Binding(get:{boundSelection},set:{boundSelection=$0}))
+        let coordinator = editor.makeCoordinator()
+        let textView = NSTextView()
+        textView.string = boundText
+        textView.setSelectedRange(NSRange(location:7,length:0))
+        coordinator.textViewDidChangeSelection(Notification(name:NSTextView.didChangeSelectionNotification,object:textView))
+        check(boundSelection.location == 7, "native editor selection reaches toolbar binding")
+        textView.string = "Edited."; textView.setSelectedRange(NSRange(location:4,length:0))
+        coordinator.textDidChange(Notification(name:NSText.didChangeNotification,object:textView))
+        check(boundText == "Edited." && boundSelection.location == 4, "native edits update text and cursor")
+        check(NativePronunciation.cmuToken(" B   EY1 S ") == "[B EY1 S]", "CMU helper normalizes phoneme spacing")
+        for malformed in ["B EY S", "B EY3 S", "b ey1 s", "[B EY1 S]"] {
+            check(NativePronunciation.cmuToken(malformed) == nil, "CMU authoring rejects malformed input")
+        }
+        check(NativePronunciation.pinyinValue("NI3 HAO3") == "NI3 HAO3", "native pinyin authoring")
+        for malformed in ["zhe2", "ZHE0", "ZHE6", "ZHE", "[ZHE2]"] {
+            check(NativePronunciation.pinyinValue(malformed) == nil, "pinyin authoring validation")
+        }
+
+        model.timeShift = 0.3; model.positionTemperature = 7
+        model.classTemperature = 0.6; model.layerPenaltyFactor = 4
+        model.useDuration = true; model.targetDuration = 2.5
+        model.cloneMatchInsideWords = true
+        func advanced(_ fields: [String:String], duration: Bool = true) {
+            check(fields["t_shift"] == "0.3", "time shift forwarded")
+            check(fields["position_temperature"] == "7.0", "position temperature forwarded")
+            check(fields["class_temperature"] == "0.6", "class temperature forwarded")
+            check(fields["layer_penalty_factor"] == "4.0", "layer penalty forwarded")
+            check(fields["duration"] == (duration ? "2.5" : nil), "duration respects route")
+        }
+        CaptureProtocol.response = ["output":output]
+        model.generateClone(); wait(model); advanced(CaptureProtocol.captured.last!)
+        check(CaptureProtocol.captured.last!["pronunciation_mode"] == "substring", "explicit Clone legacy mode")
+        model.designPronunciationRules = "bass=base"; model.designMatchInsideWords = false
+        model.generateDesign(); wait(model); advanced(CaptureProtocol.captured.last!)
+        check(CaptureProtocol.captured.last!["pronunciations"] == "bass=base", "Design has its own dictionary")
+        check(CaptureProtocol.captured.last!["pronunciation_mode"] == "words", "Design does not inherit Clone replacement mode")
+        CaptureProtocol.response = ["outputs":[output,output]]
+        model.generateVariants(); wait(model); advanced(CaptureProtocol.captured.last!)
+        check(CaptureProtocol.captured.last!["pronunciation_mode"] == "substring", "Variants use Clone replacement mode")
+        model.longFormMatchInsideWords = true
+        model.productionChunks = [.init(text:"Edited production text.")]
+        CaptureProtocol.response = ["output":output,"chunks":1,"segment_outputs":[output]]
+        model.generateLongForm(); wait(model); advanced(CaptureProtocol.captured.last!, duration:false)
+        check(CaptureProtocol.captured.last!["pronunciation_mode"] == "substring", "Long Form mode forwarded")
+        CaptureProtocol.response = ["output":output,"retry_index":0,"segment_outputs":[output]]
+        model.retryChunk(0); wait(model); advanced(CaptureProtocol.captured.last!, duration:false)
+        CaptureProtocol.response = ["A":output,"B":output,"map":["A":"OmniVoice Zero-Shot","B":"My Voice"]]
+        model.runEngineComparison(); wait(model); advanced(CaptureProtocol.captured.last!)
+        check(model.engineLabSupportsNative, "native controls visible for both Omni engines")
+        model.engineLabEngineB = "F5-TTS"
+        model.cloneLanguage = "Auto detect"; model.clonePronunciationRules = ""
+        check(!model.engineLabSupportsNative, "native controls hidden for mixed F5 comparison")
+        model.runEngineComparison(); wait(model)
+        let mixed = CaptureProtocol.captured.last!
+        check(mixed["duration"] == nil && mixed["t_shift"] == "0.1", "mixed comparison drops hidden advanced selections")
+        check(mixed["position_temperature"] == "5.0" && mixed["class_temperature"] == "0.0" && mixed["layer_penalty_factor"] == "5.0", "mixed native decoding defaults")
+        check(model.timeShift == 0.3 && model.useDuration, "filtering preserves native user settings")
+        model.resetGenerationDefaults()
+        model.applyPreset(model.preset)
+        check(model.speed == 1 && model.steps == 32 && model.guidance == 2 && model.denoiseOutput && model.generationSeed == 0, "reset restores established defaults")
+        check(!model.useDuration && model.timeShift == 0.1 && model.positionTemperature == 5 && model.classTemperature == 0 && model.layerPenaltyFactor == 5, "reset restores native advanced defaults")
+        invalid = GenerationRequest(text:"valid"); invalid.duration = .infinity
+        check((try? invalid.fields()) == nil, "invalid duration rejected")
+        invalid = GenerationRequest(text:"valid"); invalid.timeShift = 0
+        check((try? invalid.fields()) == nil, "invalid schedule rejected")
+        invalid = GenerationRequest(text:"valid"); invalid.pronunciationMode = "invalid"
+        check((try? invalid.fields()) == nil, "invalid replacement mode rejected")
+        CaptureProtocol.response = ["text":"base [laughter]", "can_generate":true,
+            "issues":[["level":"warning","message":"Example warning"]]]
+        var inspection: SpeechInspection?
+        var inspectionError: Error?
+        Task {
+            do { inspection = try await model.inspectSpeech(text:"bass [laughter]", rules:"bass=base", matchMode:"words") }
+            catch { inspectionError = error }
+        }
+        let previewDeadline = Date().addingTimeInterval(10)
+        while inspection == nil && inspectionError == nil && Date() < previewDeadline {
+            RunLoop.main.run(until:Date().addingTimeInterval(0.01))
+        }
+        check(inspection?.text == "base [laughter]" && inspection?.can_generate == true, "preview result decoded")
+        check(inspection?.issues.first?.level == "warning", "preview warnings available to editor")
+        check(CaptureProtocol.captured.last?["route"] == "/preview-speech", "editor uses preview API")
+        check(CaptureProtocol.captured.last?["text"] == "bass [laughter]" && CaptureProtocol.captured.last?["pronunciations"] == "bass=base" && CaptureProtocol.captured.last?["pronunciation_mode"] == "words", "preview forwards current text and rule mode")
         print("PASS: \(checks) Swift UI/request assertions across Clone, Design, Variants, Long Form, Retry and Engine Lab")
     }
 }

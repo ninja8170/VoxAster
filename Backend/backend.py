@@ -13,7 +13,7 @@ import soundfile as sf
 
 from omnivoice import OmniVoice, OmniVoiceGenerationConfig
 
-from generation import GenerationRequest, generation_form, apply_pronunciations, OMNI_CAPABILITIES, F5_CAPABILITIES
+from generation import inspect_speech, GenerationRequest, generation_form, apply_pronunciations, OMNI_CAPABILITIES, F5_CAPABILITIES
 from provenance import MANIFEST, resolve_base_model, runtime_provenance
 
 app = FastAPI()
@@ -49,7 +49,7 @@ def startup():
 
 @app.get("/health")
 def health():
-    return {"ok": MODEL is not None, "device": "mps", "provenance": PROVENANCE, "generation_contract": 1}
+    return {"ok": MODEL is not None, "device": "mps", "provenance": PROVENANCE, "generation_contract": 2}
 
 
 def apply_seed(seed):
@@ -269,6 +269,14 @@ async def analyze_reference(
             except Exception:
                 pass
 
+@app.post("/preview-speech")
+async def preview_speech(text: str = Form(''), pronunciations: str = Form(''),
+                         pronunciation_mode: str = Form('words')):
+    if pronunciation_mode not in ('words', 'substring'):
+        raise HTTPException(422, "Unknown pronunciation match mode.")
+    return inspect_speech(text, pronunciations, pronunciation_mode)
+
+
 @app.post("/generate-clone")
 async def generate_clone(request: GenerationRequest = Depends(generation_form),
                          ref_audio: UploadFile = File(...)):
@@ -299,6 +307,8 @@ def split_script(text, max_chars=420):
 async def generate_long(request: GenerationRequest = Depends(generation_form),
                         ref_audio: UploadFile = File(...)):
     import numpy as np
+    if request.duration is not None:
+        raise HTTPException(422, "Fixed duration is supported for single passages and Variants, not Long Form masters or retries.")
     # Explicit segments are authoritative: do not re-split edited text.
     chunks = request.segments if request.segments is not None else split_script(request.text)
     if request.retry_index is not None and request.retry_index >= len(chunks):

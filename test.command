@@ -16,7 +16,7 @@ from pathlib import Path
 manifest=json.loads(Path(sys.argv[1]).read_text())
 app=Path(sys.argv[2]); info=plistlib.loads((app/'Contents/Info.plist').read_bytes())
 assert info['CFBundleShortVersionString']==manifest['native_app_version']
-for name in ['backend.py','generation.py','provenance.py','runtime.json']:
+for name in ['backend.py','generation.py','speech_text.py','provenance.py','runtime.json']:
  assert (app/'Contents/Resources'/name).read_bytes()==(Path(sys.argv[1]).parent/name).read_bytes()
 print('PASS: release bundle provenance, resources and code signature')
 PY
