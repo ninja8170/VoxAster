@@ -1,26 +1,15 @@
 """Native speech syntax checks and preview; not a performance-direction parser."""
 import re
 
-NATIVE_EVENTS = (
-    'laughter', 'sigh', 'confirmation-en', 'question-en', 'question-ah',
-    'question-oh', 'question-ei', 'question-yi', 'surprise-ah', 'surprise-oh',
-    'surprise-wa', 'surprise-yo', 'dissatisfaction-hnn',
-)
-UNSUPPORTED = set('deadpan sarcastic angry amused irritated excited sad serious whisper shout louder quieter pause laugh chuckle breath gasp sniff conversational annoyed shouting chuckling throat_clear'.split())
-VOWELS = set('AA AE AH AO AW AY EH ER EY IH IY OW OY UH UW'.split())
-CONSONANTS = set('B CH D DH F G HH JH K L M N NG P R S SH T TH V W Y Z ZH'.split())
-PHONEMES = CONSONANTS | {v + stress for v in VOWELS for stress in '012'}
-PROTECTED = re.compile(r'(\[[^\[\]]*\]|<\|[^<>]*\|>|[A-Z]+[1-5])')
-BRACKETS = re.compile(r'\[([^\[\]]*)\]')
-
-
-def cmu_valid(content):
-    tokens = content.split()
-    return bool(tokens) and all(t in PHONEMES for t in tokens)
+from performance_script import NATIVE_EVENTS, UNSUPPORTED, PHONEMES, PROTECTED, BRACKETS, cmu_valid, parse_script, ScriptError
 
 
 def syntax_issues(text):
     issues = []
+    try:
+        parse_script(text)
+    except ScriptError as exc:
+        issues.append({'level':'error', 'message':str(exc)})
     def add(level, message):
         issues.append({'level': level, 'message': message})
     if '<|' in text or '|>' in text:
@@ -40,7 +29,7 @@ def syntax_issues(text):
         elif re.fullmatch(r'[A-Z0-9\s]+', content) and any(t in PHONEMES or re.fullmatch(r'[A-Z]+\d', t) for t in content.split()):
             add('error', f'Invalid CMU phonemes in [{content}]. Use uppercase CMU symbols, with vowel stress 0, 1 or 2.')
         else:
-            add('warning', f'[{content}] is not a verified native event or valid CMU override; its contents may be spoken literally.')
+            add('error', f'[{content}] is not a verified native event or valid CMU override; its contents may be spoken literally.')
     if re.search(r'\*\*[^*\n]+\*\*|(?<!\*)\*[^*\n]+\*(?!\*)', text):
         add('warning', 'Asterisks/Markdown do not control emphasis or acting. They reach the model and may be spoken literally.')
     if re.search(r'(?m)^\s{0,3}(?:#{1,6}\s|[-*]\s|```)|\[[^\]]+\]\([^)]*\)', text):
@@ -69,7 +58,7 @@ def rule_issues(rules):
         if original in seen:
             issues.append({'level':'warning','message':f'Rule {index}: repeated source; rules run in order.'})
         seen.add(original)
-        issues.extend(syntax_issues(replacement))
+        issues.extend(dict(issue, message=f'Rule {index}: ' + issue['message']) for issue in syntax_issues(replacement))
         if PROTECTED.fullmatch(original):
             issues.append({'level':'warning','message':f'Rule {index}: native markup is protected and cannot be replaced.'})
     return issues

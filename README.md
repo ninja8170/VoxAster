@@ -6,11 +6,11 @@ OmniVoice Mac turns the open-source [k2-fsa OmniVoice](https://github.com/k2-fsa
 
 Instead of operating OmniVoice through scripts or a browser interface, OmniVoice Mac provides a complete SwiftUI studio for creating voices, generating speech, managing projects, benchmarking engines and training personalised LoRA voice models directly on Apple Silicon.
 
-> **Current version:** v3.6.0
+> **Current version:** v3.7.0
 > **Platform:** macOS / Apple Silicon  
 > **Status:** Active development
 
-Phase 2 adds all 13 verified native vocal events, cursor insertion, pronunciation authoring and preview, text safety, and native advanced controls. See [the Phase 2 reference and boundaries](PHASE2.md) and [the accepted Phase 1 generation contract](PHASE1.md). Build with `./build.command`; verify with `./test.command`. These commands do not install or upgrade dependencies.
+Phase 3 adds a dedicated Performance workspace for exact pauses, segment gain, retained retries and deterministic master assembly. See [the Phase 3 behavior and boundaries](PHASE3.md), [the native controls reference](PHASE2.md), and [the accepted Phase 1 generation contract](PHASE1.md). These app-level controls do not add native emotional acting. Build with `./build.command`; verify with `./test.command`. These commands do not install or upgrade dependencies.
 
 ---
 
@@ -282,6 +282,16 @@ It includes:
 
 ---
 
+## Performance timing and assembly
+
+Use the **Performance** workspace with an OmniVoice reference clone. Pause, Louder and Quieter chips insert app-level directions separately from the 13 native vocal events.
+
+Prepare freezes the script, reference, settings and seeds. Render missing segments, preview/retry individual segments, and rebuild the master from retained audio without re-synthesizing. `[pause 500ms]` inserts exactly 12,000 zero samples at 24 kHz after speech post-processing. Louder/Quieter apply ±3 dB to the next segment with common headroom and edge fades; they do not mean shout/whisper. Unknown bracket controls block generation.
+
+See [PHASE3.md](PHASE3.md) for gain scope, edge trimming, exact sample behavior, persistence, engine boundaries and current limitations.
+
+---
+
 ## 🗂 Projects
 
 Projects separate production work from global application history.
@@ -417,6 +427,9 @@ OmniVoice-Mac/
 │   ├── backend.py
 │   ├── generation.py
 │   ├── speech_text.py
+│   ├── performance_script.py
+│   ├── performance_audio.py
+│   ├── performance.py
 │   ├── provenance.py
 │   └── runtime.json
 │
@@ -424,13 +437,15 @@ OmniVoice-Mac/
 │   ├── OmniVoice.swift
 │   ├── GenerationRequest.swift
 │   ├── SpeechEditor.swift
-│   └── NativeAdvancedControls.swift
+│   ├── NativeAdvancedControls.swift
+│   └── PerformanceWorkspace.swift
 │
 ├── Tests/
 ├── build.command
 ├── test.command
 ├── PHASE1.md
 ├── PHASE2.md
+├── PHASE3.md
 ├── install.command
 ├── setup-personal-training.command
 ├── repair-mac-training.command

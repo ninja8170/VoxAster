@@ -39,12 +39,14 @@ struct StatusPill: View {
 #if !PHASE1_TESTS
 @main
 struct OmniVoiceNativeApp: App {
+    @NSApplicationDelegateAdaptor(DraftQuitDelegate.self) private var appDelegate
     @StateObject private var model = AppModel()
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(model)
+                .onAppear { appDelegate.model = model }
                 .frame(minWidth: 1180, minHeight: 760)
                 .preferredColorScheme(.dark)
         }
@@ -61,6 +63,7 @@ enum AppSection: String, CaseIterable {
     case library = "Library"
     case history = "History"
     case longForm = "Long Form"
+    case performance = "Performance"
     case projects = "Projects"
     case engineLab = "Engine Lab"
     case personalVoice = "Voice Training"
@@ -73,6 +76,7 @@ enum AppSection: String, CaseIterable {
         case .library: return "folder"
         case .history: return "clock"
         case .longForm: return "text.document"
+        case .performance: return "waveform.path"
         case .projects: return "square.grid.2x2"
         case .engineLab: return "testtube.2"
         case .personalVoice: return "person.wave.2"
@@ -289,38 +293,42 @@ final class RecorderController: NSObject, ObservableObject, AVAudioRecorderDeleg
 final class AppModel: ObservableObject {
     @Published var selectedSection: AppSection = .clone
 
-    @Published var referenceURL: URL?
-    @Published var referenceText = ""
-    @Published var cloneText = "The future sounds better together."
-    @Published var cloneLanguage = "Auto detect"
-    @Published var clonePronunciationRules = ""
-    @Published var designMode = "Design"
-    @Published var designDialect = "Auto"
-    @Published var designPreset = "Custom"
+    @Published var referenceURL: URL? { didSet { referenceDidChange() } }
+    @Published var referenceIdentity: ReferenceIdentity?
+    @Published var unverifiedReferenceTranscript: String?
+    var transcriptReferenceID: UUID?
+    var analysisBinding: ReferenceAnalysisBinding?
+    @Published var referenceText = "" { didSet { transcriptDidChange() } }
+    @Published var cloneText = "The future sounds better together." { didSet { draftChanged() } }
+    @Published var cloneLanguage = "Auto detect" { didSet { draftChanged() } }
+    @Published var clonePronunciationRules = "" { didSet { draftChanged() } }
+    @Published var designMode = "Design" { didSet { draftChanged() } }
+    @Published var designDialect = "Auto" { didSet { draftChanged() } }
+    @Published var designPreset = "Custom" { didSet { draftChanged() } }
 
-    @Published var designText = "Create a voice that sounds natural, confident and warm."
-    @Published var designGender = "Auto"
-    @Published var designAge = "Auto"
-    @Published var designPitch = "Auto"
-    @Published var designAccent = "Auto"
-    @Published var designStyle = "Auto"
+    @Published var designText = "Create a voice that sounds natural, confident and warm." { didSet { draftChanged() } }
+    @Published var designGender = "Auto" { didSet { draftChanged() } }
+    @Published var designAge = "Auto" { didSet { draftChanged() } }
+    @Published var designPitch = "Auto" { didSet { draftChanged() } }
+    @Published var designAccent = "Auto" { didSet { draftChanged() } }
+    @Published var designStyle = "Auto" { didSet { draftChanged() } }
 
-    @Published var speed = 1.0
-    @Published var steps = 32.0
-    @Published var guidance = 2.0
+    @Published var speed = 1.0 { didSet { draftChanged() } }
+    @Published var steps = 32.0 { didSet { draftChanged() } }
+    @Published var guidance = 2.0 { didSet { draftChanged() } }
     @Published var runtimeProvenance: [String: String] = [:]
-    @Published var generationSeed = 0
-    @Published var denoiseOutput = true
-    @Published var useDuration = false
-    @Published var targetDuration = 10.0
-    @Published var timeShift = 0.1
-    @Published var positionTemperature = 5.0
-    @Published var classTemperature = 0.0
-    @Published var layerPenaltyFactor = 5.0
-    @Published var cloneMatchInsideWords = false
-    @Published var longFormMatchInsideWords = false
-    @Published var designPronunciationRules = ""
-    @Published var designMatchInsideWords = false
+    @Published var generationSeed = 0 { didSet { draftChanged() } }
+    @Published var denoiseOutput = true { didSet { draftChanged() } }
+    @Published var useDuration = false { didSet { draftChanged() } }
+    @Published var targetDuration = 10.0 { didSet { draftChanged() } }
+    @Published var timeShift = 0.1 { didSet { draftChanged() } }
+    @Published var positionTemperature = 5.0 { didSet { draftChanged() } }
+    @Published var classTemperature = 0.0 { didSet { draftChanged() } }
+    @Published var layerPenaltyFactor = 5.0 { didSet { draftChanged() } }
+    @Published var cloneMatchInsideWords = false { didSet { draftChanged() } }
+    @Published var longFormMatchInsideWords = false { didSet { draftChanged() } }
+    @Published var designPronunciationRules = "" { didSet { draftChanged() } }
+    @Published var designMatchInsideWords = false { didSet { draftChanged() } }
     var engineLabSupportsNative: Bool { engineLabEngineA != "F5-TTS" && engineLabEngineB != "F5-TTS" }
 
 
@@ -350,7 +358,7 @@ final class AppModel: ObservableObject {
     @Published var errorMessage: String?
 
     // Engine Lab
-    @Published var engineLabText = "Artificial intelligence is changing the way we create, communicate, and understand the world."
+    @Published var engineLabText = "Artificial intelligence is changing the way we create, communicate, and understand the world." { didSet { draftChanged() } }
     @Published var engineLabRunning = false
     @Published var engineLabStatus = "Ready"
     @Published var engineLabA: URL?
@@ -359,8 +367,8 @@ final class AppModel: ObservableObject {
     @Published var engineLabRevealed = false
     @Published var engineLabWinner: String?
     @Published var engineLabAvailableEngines: [String] = ["OmniVoice Zero-Shot"]
-    @Published var engineLabEngineA = "OmniVoice Zero-Shot"
-    @Published var engineLabEngineB = "F5-TTS"
+    @Published var engineLabEngineA = "OmniVoice Zero-Shot" { didSet { draftChanged() } }
+    @Published var engineLabEngineB = "F5-TTS" { didSet { draftChanged() } }
     @Published var f5Available = false
 
     // Personal Voice Lab
@@ -388,7 +396,7 @@ final class AppModel: ObservableObject {
     @Published var trainedEngines: [String] = []
 
     @Published var personalRejectionDetails: [String] = []
-    @Published var preset = "Natural"
+    @Published var preset = "Natural" { didSet { draftChanged() } }
     private var synchronizingProduction = false
     @Published var longFormText = "" {
         didSet {
@@ -396,20 +404,28 @@ final class AppModel: ObservableObject {
                 productionChunks = []
                 longFormOutputURL = nil
             }
+            draftChanged()
         }
     }
     @Published var longFormProgress: Double = 0
     @Published var longFormStatus = "Ready"
     @Published var longFormOutputURL: URL?
-    @Published var pronunciationRules = ""
-    @Published var projectName = "My Voice Project"
+    @Published var pronunciationRules = "" { didSet { draftChanged() } }
+    @Published var projectName = "My Voice Project" { didSet { draftChanged() } }
     @Published var projects: [VoiceProject] = []
     @Published var currentProjectID: UUID?
     @Published var projectStatus = "Unsaved project"
     @Published var activeProjectGenerationIDs: [UUID] = []
-    @Published var variantCount = 2
+    @Published var performanceText = "A setup. [pause 500ms] A punchline." { didSet { draftChanged() } }
+    @Published var performanceRules = "" { didSet { draftChanged() } }
+    @Published var performanceMatchInsideWords = false { didSet { draftChanged() } }
+    @Published var performanceBusy = false
+    @Published var performanceStatus = "Prepare a production to freeze its segments."
+    @Published var performanceProduction: PerformanceProduction?
+    @Published var performanceHistory: [PerformanceSummary] = []
+    @Published var variantCount = 2 { didSet { draftChanged() } }
     @Published var variantURLs: [URL] = []
-    @Published var productionChunks: [ProductionChunk] = []
+    @Published var productionChunks: [ProductionChunk] = [] { didSet { draftChanged() } }
     @Published var currentChunkIndex = 0
 
     @Published var generations: [Generation] = []
@@ -424,7 +440,7 @@ final class AppModel: ObservableObject {
 
     private var backend: Process?
     private var storageOverride: URL?
-    private let session: URLSession
+    let session: URLSession
 
     struct Generation: Identifiable, Codable, Equatable {
         var id = UUID()
@@ -441,6 +457,7 @@ final class AppModel: ObservableObject {
         let path: String
         var transcript: String
         let createdAt: Date
+        var referenceSHA256: String? = nil
         var url: URL { URL(fileURLWithPath: path) }
     }
 
@@ -460,14 +477,30 @@ final class AppModel: ObservableObject {
         var generationIDs: [UUID]
         var createdAt: Date
         var updatedAt: Date
+        var referenceSHA256: String? = nil
     }
 
-    init(startServices: Bool = true, storageRoot: URL? = nil, session: URLSession = .shared) {
+    var draftsEnabled = false
+    var draftSuspended = false
+    var draftLoadFailed = false
+    var projectLoadFailed = false
+    var draftBook = DraftBook()
+    @Published var draftStatus = "Draft recovery not started"
+    @Published var recoverableDrafts: [DraftSummary] = []
+    var persistenceWrite: (Data, URL) throws -> Void = { try $0.write(to: $1, options: .atomic) }
+
+    init(startServices: Bool = true, storageRoot: URL? = nil, session: URLSession = .shared, recoverDrafts: Bool = false) {
         self.session = session
         storageOverride = storageRoot
+        if startServices || recoverDrafts {
+            do { try FileManager.default.createDirectory(at: appSupport, withIntermediateDirectories: true) }
+            catch { errorMessage = "Draft storage unavailable: \(error.localizedDescription)" }
+            loadPersistentData()
+            restoreDrafts()
+            draftsEnabled = true
+        }
         guard startServices else { return }
         createDirectories()
-        loadPersistentData()
         startBackend()
         pollHealth()
     }
@@ -484,7 +517,7 @@ final class AppModel: ObservableObject {
     private var outputsDir: URL { documentsRoot.appendingPathComponent("outputs", isDirectory: true) }
     private var voicesDir: URL { documentsRoot.appendingPathComponent("voices", isDirectory: true) }
 
-    private var appSupport: URL {
+    var appSupport: URL {
         if let storageOverride { return storageOverride }
         return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("OmniVoice", isDirectory: true)
@@ -572,7 +605,7 @@ final class AppModel: ObservableObject {
                     guard let data,
                           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                           json["ok"] as? Bool == true,
-                          json["generation_contract"] as? Int == 2,
+                          json["generation_contract"] as? Int == 3,
                           let provenance = json["provenance"] as? [String: String] else {
                         self?.modelReady = false
                         self?.status = "Incompatible backend"
@@ -948,8 +981,7 @@ final class AppModel: ObservableObject {
         panel.canChooseDirectories = false
 
         if panel.runModal() == .OK {
-            referenceURL = panel.url
-            referencePlayer.stop()
+            if let url = panel.url { selectReference(url) }
         }
     }
 
@@ -967,8 +999,7 @@ final class AppModel: ObservableObject {
 
                 guard let resolved = url else { return }
                 DispatchQueue.main.async {
-                    self?.referenceURL = resolved
-                    self?.referencePlayer.stop()
+                    self?.selectReference(resolved)
                 }
             }
             return true
@@ -980,9 +1011,7 @@ final class AppModel: ObservableObject {
         recorder.toggle { [weak self] url in
             guard let self else { return }
             if let url {
-                self.referencePlayer.stop()
-                self.referenceURL = url
-                self.referenceText = ""
+                self.selectRecordedReference(url)
             } else if self.recorder.permissionDenied {
                 self.errorMessage = "Microphone access is disabled. Enable OmniVoice in System Settings → Privacy & Security → Microphone."
             } else {
@@ -1008,11 +1037,16 @@ final class AppModel: ObservableObject {
 
         do {
             try FileManager.default.copyItem(at: source, to: destination)
+            guard let identity = referenceIdentity, referenceMatches(identity), try SafeFiles.digest(destination) == identity.sha256 else {
+                try? FileManager.default.removeItem(at: destination)
+                throw ReliabilityError(message: "The reference changed while saving. Select it again before saving its transcript.")
+            }
             let saved = SavedVoice(
                 name: trimmed,
                 path: destination.path,
                 transcript: referenceText,
-                createdAt: Date()
+                createdAt: Date(),
+                referenceSHA256: try SafeFiles.digest(destination)
             )
             savedVoices.insert(saved, at: 0)
             saveVoices()
@@ -1022,15 +1056,11 @@ final class AppModel: ObservableObject {
     }
 
     func selectEngineLabVoice(_ voice: SavedVoice) {
-        referenceURL = voice.url
-        referenceText = voice.transcript
-        referencePlayer.stop()
+        selectReference(voice.url, transcript: voice.transcript, expectedSHA256: voice.referenceSHA256)
     }
 
     func useVoice(_ voice: SavedVoice) {
-        referenceURL = voice.url
-        referenceText = voice.transcript
-        selectedSection = .clone
+        if selectReference(voice.url, transcript: voice.transcript, expectedSHA256: voice.referenceSHA256) { selectedSection = .clone }
     }
 
     func deleteVoice(_ voice: SavedVoice) {
@@ -1039,78 +1069,72 @@ final class AppModel: ObservableObject {
         saveVoices()
     }
 
-    private func saveProjects() {
-        if let data = try? JSONEncoder().encode(projects) {
-            try? data.write(to: projectsFile, options: .atomic)
-        }
+    private func saveProjects(_ records: [VoiceProject]) throws {
+        guard !projectLoadFailed else { throw ReliabilityError(message: "Existing project records could not be read. Repair or restore projects.json before saving; it has not been overwritten.") }
+        try persistenceWrite(JSONEncoder().encode(records), projectsFile)
     }
 
     func newProject() {
-        outputPlayer.stop()
-        currentProjectID = nil
-        activeProjectGenerationIDs = []
-        projectName = "Untitled Project"
-        pronunciationRules = ""
-        referenceURL = nil
-        referenceText = ""
-        projectStatus = "New project — not saved"
+        guard canSwitchDraft() else { return }
+        applyDraft(EditableDraft())
+        draftBook.activeKey = UUID().uuidString
+        projectStatus = "New project — recoverable draft only"
+        _ = persistDraft()
     }
 
     func saveCurrentProject() {
         let name = projectName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else {
-            errorMessage = "Enter a project name before saving."
-            return
-        }
+        guard !name.isEmpty else { errorMessage = "Enter a project name before saving."; return }
+        guard canSwitchDraft() else { return }
         let now = Date()
-        if let id = currentProjectID, let i = projects.firstIndex(where: {$0.id == id}) {
-            projects[i].name = name
-            projects[i].referencePath = referenceURL?.path
-            projects[i].referenceText = referenceText
-            projects[i].pronunciationRules = pronunciationRules
-            projects[i].generationIDs = activeProjectGenerationIDs
-            projects[i].updatedAt = now
-        } else {
-            let p = VoiceProject(
-                name: name,
-                referencePath: referenceURL?.path,
-                referenceText: referenceText,
-                pronunciationRules: pronunciationRules,
-                generationIDs: activeProjectGenerationIDs,
-                createdAt: now,
-                updatedAt: now
-            )
-            projects.insert(p, at: 0)
-            currentProjectID = p.id
-            activeProjectGenerationIDs = p.generationIDs
+        let id = currentProjectID ?? UUID()
+        var records = projects
+        let record = VoiceProject(id: id, name: name, referencePath: referenceURL?.path,
+            referenceText: referenceText, pronunciationRules: pronunciationRules,
+            generationIDs: activeProjectGenerationIDs,
+            createdAt: records.first(where: { $0.id == id })?.createdAt ?? now, updatedAt: now,
+            referenceSHA256: referenceIdentity?.sha256)
+        records.removeAll { $0.id == id }; records.append(record)
+        records.sort { $0.updatedAt > $1.updatedAt }
+        do {
+            try saveProjects(records)
+            projects = records; currentProjectID = id
+            draftBook.activeKey = id.uuidString
+            if persistDraft() { projectStatus = "Project record and editable draft saved — not a full production session" }
+        } catch {
+            projectStatus = "Project save failed — editable draft retained"
+            errorMessage = "Could not save project: \(error.localizedDescription). Your active work has not been cleared."
         }
-        projects.sort {$0.updatedAt > $1.updatedAt}
-        saveProjects()
-        projectStatus = "Saved"
     }
 
     func openProject(_ p: VoiceProject) {
-        currentProjectID = p.id
-        activeProjectGenerationIDs = p.generationIDs
-        projectName = p.name
-        pronunciationRules = p.pronunciationRules
-        referenceText = p.referenceText
-        if let path = p.referencePath, FileManager.default.fileExists(atPath: path) {
-            referenceURL = URL(fileURLWithPath: path)
-        } else {
-            referenceURL = nil
+        guard canSwitchDraft() else { return }
+        let key = p.id.uuidString
+        if let draft = draftBook.drafts[key] { applyDraft(draft) }
+        else {
+            var draft = EditableDraft()
+            draft.projectID = p.id; draft.projectName = p.name
+            draft.referencePath = p.referencePath; draft.referenceSHA256 = p.referenceSHA256
+            draft.referenceText = p.referenceText; draft.pronunciationRules = p.pronunciationRules
+            applyDraft(draft)
         }
-        projectStatus = "Opened"
+        currentProjectID = p.id; activeProjectGenerationIDs = p.generationIDs
+        draftBook.activeKey = key
+        projectStatus = "Opened project record and editable draft — production results are separate"
+        _ = persistDraft()
     }
 
     func deleteProject(_ p: VoiceProject) {
-        projects.removeAll {$0.id == p.id}
-        if currentProjectID == p.id {
-            currentProjectID = nil
-            activeProjectGenerationIDs = []
-            projectStatus = "Unsaved project"
-        }
-        saveProjects()
+        guard canSwitchDraft() else { return }
+        let records = projects.filter { $0.id != p.id }
+        do {
+            try saveProjects(records); projects = records
+            if currentProjectID == p.id {
+                currentProjectID = nil
+                projectStatus = "Project record removed; editable draft retained"
+                _ = persistDraft()
+            }
+        } catch { errorMessage = "Could not remove project record: \(error.localizedDescription)" }
     }
 
     func projectOutputs(_ p: VoiceProject?) -> [Generation] {
@@ -1139,15 +1163,19 @@ final class AppModel: ObservableObject {
            let index = projects.firstIndex(where: { $0.id == projectID }) {
             projects[index].generationIDs = activeProjectGenerationIDs
             projects[index].updatedAt = Date()
-            saveProjects()
+            do { try saveProjects(projects) }
+            catch { projectStatus = "Project update failed"; errorMessage = "Could not save project output association: \(error.localizedDescription)" }
         }
     }
 
     func generationFields(text: String, pronunciations: String = "", language: String = "Auto detect",
                           instruct: String = "", segments: [String]? = nil,
                           retryIndex: Int? = nil, matchInsideWords: Bool = false,
-                          nativeAdvanced: Bool = true, allowDuration: Bool = true) -> [String: String]? {
+                          nativeAdvanced: Bool = true, allowDuration: Bool = true, checkReference: Bool = true) -> [String: String]? {
         do {
+            if checkReference, let identity = referenceIdentity, !referenceMatches(identity) {
+                throw ReliabilityError(message: "Reference audio changed or is missing. Select it again before generation; its previous transcript cannot be reused.")
+            }
             guard steps.isFinite, (8...64).contains(steps) else { throw GenerationRequest.RequestError.invalid }
             return try GenerationRequest(text: text, refText: referenceText,
                 pronunciations: pronunciations, language: language, instruct: instruct,
@@ -1334,9 +1362,9 @@ final class AppModel: ObservableObject {
         preset = "Natural"
     }
 
-    func inspectSpeech(text: String, rules: String, matchMode: String) async throws -> SpeechInspection {
+    func inspectSpeech(text: String, rules: String, matchMode: String, performance: Bool = false) async throws -> SpeechInspection {
         let boundary = UUID().uuidString
-        var request = URLRequest(url: URL(string:"http://127.0.0.1:8011/preview-speech")!)
+        var request = URLRequest(url: URL(string:"http://127.0.0.1:8011/" + (performance ? "performance/preview" : "preview-speech"))!)
         request.httpMethod = "POST"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField:"Content-Type")
         var body = Data()
@@ -1430,6 +1458,11 @@ final class AppModel: ObservableObject {
             return
         }
 
+        guard let identity = referenceIdentity, referenceMatches(identity) else {
+            errorMessage = "Reference audio changed or is unavailable. Select it again before analysis."; return
+        }
+        let binding = ReferenceAnalysisBinding(identity: identity, transcript: referenceText, requestID: UUID())
+        analysisBinding = binding
         referenceAnalyzing = true
         referenceAnalysisReady = false
         referenceAnalysisStatus = "Analyzing voice…"
@@ -1464,6 +1497,7 @@ final class AppModel: ObservableObject {
 
         session.dataTask(with: request) { [weak self] data, response, error in
             DispatchQueue.main.async {
+                guard self?.analysisIsCurrent(binding) == true else { return }
                 self?.referenceAnalyzing = false
 
                 if let error {
@@ -1512,7 +1546,9 @@ final class AppModel: ObservableObject {
     }
 
     func applyReferenceRecommendations() {
-        guard referenceAnalysisReady else { return }
+        guard referenceAnalysisReady, let binding = analysisBinding, analysisIsCurrent(binding) else {
+            invalidateReferenceAnalysis(); return
+        }
         speed = recommendedSpeed
         steps = recommendedSteps
         guidance = recommendedGuidance
@@ -1579,7 +1615,8 @@ final class AppModel: ObservableObject {
             pronunciations: extraFields["pronunciations"] ?? "",
             language: extraFields["language"] ?? "Auto detect",
             instruct: extraFields["instruct"] ?? "",
-            matchInsideWords: endpoint == "generate-design" ? designMatchInsideWords : cloneMatchInsideWords) else { isGenerating = false; return }
+            matchInsideWords: endpoint == "generate-design" ? designMatchInsideWords : cloneMatchInsideWords,
+            checkReference: audioURL != nil) else { isGenerating = false; return }
         for (name, value) in fields { appendField(name, value) }
 
         if let audioURL, let data = try? Data(contentsOf: audioURL) {
@@ -1654,14 +1691,7 @@ final class AppModel: ObservableObject {
         panel.canCreateDirectories = true
 
         if panel.runModal() == .OK, let destination = panel.url {
-            do {
-                if FileManager.default.fileExists(atPath: destination.path) {
-                    try FileManager.default.removeItem(at: destination)
-                }
-                try FileManager.default.copyItem(at: url, to: destination)
-            } catch {
-                errorMessage = "Export failed: \(error.localizedDescription)"
-            }
+            exportAudio(url, to: destination)
         }
     }
 
@@ -1706,9 +1736,14 @@ final class AppModel: ObservableObject {
             savedVoices = decoded.filter { FileManager.default.fileExists(atPath: $0.path) }
         }
 
-        if let data = try? Data(contentsOf: projectsFile),
-           let decoded = try? JSONDecoder().decode([VoiceProject].self, from: data) {
-            projects = decoded.sorted { $0.updatedAt > $1.updatedAt }
+        if FileManager.default.fileExists(atPath: projectsFile.path) {
+            do {
+                let decoded = try JSONDecoder().decode([VoiceProject].self, from: Data(contentsOf: projectsFile))
+                projects = decoded.sorted { $0.updatedAt > $1.updatedAt }
+            } catch {
+                projectLoadFailed = true
+                errorMessage = "Project recovery failed: \(error.localizedDescription). Existing projects.json was preserved."
+            }
         }
     }
 }
@@ -1728,6 +1763,7 @@ struct ContentView: View {
                 case .library: LibraryWorkspace()
                 case .history: HistoryWorkspace()
                 case .longForm: LongFormWorkspace()
+                case .performance: PerformanceWorkspace()
                 case .projects: ProjectsWorkspace()
                 case .engineLab: EngineLabWorkspace()
                 case .personalVoice: PersonalVoiceWorkspace()
@@ -1746,6 +1782,7 @@ struct ContentView: View {
                 endPoint: .bottomTrailing
             )
         )
+        .safeAreaInset(edge: .bottom) { Text(model.draftStatus).font(.caption2).padding(4).frame(maxWidth: .infinity).background(OVTheme.bgBottom) }
         .alert("OmniVoice", isPresented: Binding(
             get: { model.errorMessage != nil },
             set: { if !$0 { model.errorMessage = nil } }
@@ -1937,6 +1974,12 @@ struct ReferenceCard: View {
 
                             TextField("Reference transcript (optional)", text: $model.referenceText)
                                 .textFieldStyle(.roundedBorder)
+                            if let unverified = model.unverifiedReferenceTranscript {
+                                DisclosureGroup("Saved transcript needs review") {
+                                    Text(unverified).font(.caption).textSelection(.enabled)
+                                    Button("Use this transcript after checking the recording") { model.acceptReviewedTranscript() }
+                                }
+                            }
 
                             HStack {
                                 Button {
@@ -2662,10 +2705,8 @@ struct LongFormWorkspace: View {
                             VStack(alignment: .leading, spacing: 14) {
                                 Label("Long Form Settings", systemImage: "text.document").font(.headline)
                                 NativeAdvancedControls(allowDuration:false)
-                                Picker("Preset", selection: $model.preset) {
+                                Picker("Preset", selection: Binding(get: { model.preset }, set: { model.applyPreset($0) })) {
                                     ForEach(["Fast Preview","Natural","Narration","Maximum Quality","Auto Tuned"], id: \.self) { Text($0).tag($0) }
-                                }.onChange(of: model.preset) { _, v in
-                                    if v != "Auto Tuned" { model.applyPreset(v) }
                                 }
                                 SliderRow(title: "Speed", value: $model.speed, range: 0.5...1.5, display: String(format: "%.2f", model.speed))
                                 SliderRow(title: "Steps", value: $model.steps, range: 8...64, display: "\(Int(model.steps))")
@@ -2823,6 +2864,13 @@ struct ProjectsWorkspace: View {
                             Text("\(model.projects.count)").font(.caption).foregroundStyle(.secondary)
                         }
 
+                        Text(model.draftStatus).font(.caption).foregroundStyle(.secondary)
+                        Text("Project records and recoverable drafts do not include selected takes or assembled productions. Performance productions are saved separately.").font(.caption2).foregroundStyle(.secondary)
+                        DisclosureGroup("Recoverable drafts") {
+                            ForEach(model.recoverableDrafts) { draft in
+                                Button(draft.name) { model.recoverDraft(draft.id) }
+                            }
+                        }
                         if model.projects.isEmpty {
                             Text("Create and save your first project.")
                                 .font(.caption).foregroundStyle(.secondary).padding(.vertical, 12)
@@ -3872,10 +3920,9 @@ struct GenerationSettingsCard: View {
         Card {
             VStack(alignment: .leading, spacing: 14) {
                 Label("Generation Settings", systemImage: "slider.horizontal.3").font(.headline)
-                Picker("Preset", selection: $model.preset) {
+                Picker("Preset", selection: Binding(get: { model.preset }, set: { model.applyPreset($0) })) {
                     ForEach(["Fast Preview","Natural","Narration","Maximum Quality","Auto Tuned"], id: \.self) { Text($0).tag($0) }
                 }
-                .onChange(of: model.preset) { _, v in model.applyPreset(v) }
 
                 SliderRow(title: "Speed", value: $model.speed, range: 0.5...1.5, display: String(format: "%.2f", model.speed))
                 SliderRow(title: "Steps", value: $model.steps, range: 8...64, display: "\(Int(model.steps))")
@@ -3909,6 +3956,7 @@ struct GenerationSettingsCard: View {
                     (mode == .clone && model.referenceURL == nil)
                 )
 
+                Text(model.draftStatus).font(.caption2).foregroundStyle(.secondary)
                 Text("Apple GPU (MPS) • Local & private")
                     .font(.caption2).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity)

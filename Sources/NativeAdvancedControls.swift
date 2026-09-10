@@ -23,7 +23,7 @@ struct NativeAdvancedControls: View {
                     }
                     Text("Duration overrides Speed-based length estimation for each passage or variant. Silence trimming can make the result shorter; this is not a pause control.").font(.caption2)
                 } else {
-                    Text("Fixed duration is available for single passages and Variants. Long Form retains per-segment estimation.").font(.caption2)
+                    Text("Fixed duration is available for single passages and Variants. Long Form and Performance use per-segment estimation.").font(.caption2)
                 }
                 SliderRow(title:"Time shift", value:$model.timeShift, range:0.001...1, display:String(format:"%.3f", model.timeShift))
                     .help("t_shift: changes the iterative decoding schedule. Default 0.1.")

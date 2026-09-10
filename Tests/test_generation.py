@@ -168,7 +168,7 @@ class GenerationTests(unittest.TestCase):
         self.assertEqual(loaded.name, MANIFEST['model_revision'])
         self.assertTrue(loaded.is_dir())
         response = self.client.get('/health').json()
-        self.assertEqual(response['generation_contract'], 2)
+        self.assertEqual(response['generation_contract'], 3)
         self.assertEqual(response['provenance']['package_version'], '0.2.1')
         self.assertEqual(response['provenance']['native_app_version'], MANIFEST['native_app_version'])
 

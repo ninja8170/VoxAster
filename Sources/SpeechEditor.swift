@@ -123,6 +123,7 @@ struct SpeechPreview: View {
     let text: String
     let rules: String
     let matchMode: String
+    var performance = false
     @State private var result: SpeechInspection?
     @State private var error: String?
     var body: some View {
@@ -132,7 +133,7 @@ struct SpeechPreview: View {
                     Label(issue.message, systemImage: issue.level == "error" ? "xmark.octagon" : "exclamationmark.triangle")
                         .font(.caption).foregroundStyle(issue.level == "error" ? .red : .orange)
                 }
-                DisclosureGroup("What OmniVoice receives") {
+                DisclosureGroup(performance ? "Speech segments and app-inserted pauses" : "What OmniVoice receives") {
                     Text(result.text.isEmpty ? "No speech preview available." : result.text)
                         .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                     Text("Target text after pronunciation processing and native whitespace normalization. Events and phonemes stay intact; audio timing and reference conditioning are not shown.")
@@ -142,11 +143,11 @@ struct SpeechPreview: View {
                 Text(error).font(.caption).foregroundStyle(.secondary)
             }
         }
-        .task(id: [text, rules, matchMode]) {
+        .task(id: [text, rules, matchMode, String(performance)]) {
             result = nil; error = nil
             do {
                 try await Task.sleep(nanoseconds: 250_000_000)
-                let inspection = try await model.inspectSpeech(text: text, rules: rules, matchMode: matchMode)
+                let inspection = try await model.inspectSpeech(text: text, rules: rules, matchMode: matchMode, performance:performance)
                 try Task.checkCancellation()
                 result = inspection
             } catch is CancellationError { }
@@ -161,6 +162,8 @@ struct SpeechEditor: View {
     var matchMode: String = "words"
     var nativeControls: Bool = true
     var minimumHeight: CGFloat = 110
+    var performance = false
+    @State private var pauseMilliseconds = "500"
     @State private var selection = NSRange(location: 0, length: 0)
     @State private var phonemes = ""
     @State private var pinyin = ""
@@ -174,6 +177,7 @@ struct SpeechEditor: View {
                 .frame(height: minimumHeight).background(Color.black.opacity(0.18))
                 .clipShape(RoundedRectangle(cornerRadius: 10))
             if nativeControls {
+                Text("Native Events").font(.caption.bold())
                 HStack(spacing: 6) {
                     ForEach(NativeEvent.all.filter { $0.group == "Event" }) { event in
                         Button(event.label) { insert(event.token) }.help(event.token)
@@ -211,7 +215,24 @@ struct SpeechEditor: View {
                     }
                 }
             }
-            SpeechPreview(text: text, rules: rules, matchMode: matchMode)
+            if performance {
+                VStack(alignment:.leading,spacing:6) {
+                    Text("Performance Directions • app-level").font(.caption.bold()).foregroundStyle(.purple)
+                    HStack {
+                        TextField("Milliseconds",text:$pauseMilliseconds).frame(width:85)
+                        Text("ms").font(.caption)
+                        Button("Pause") { if let token = PerformanceDirection.pauseInput(pauseMilliseconds) { insert(token) } }
+                            .disabled(PerformanceDirection.pauseInput(pauseMilliseconds) == nil).help("[pause Nms], integer 1–10000 ms")
+                        Button("Louder") { insert(PerformanceDirection.louder) }.help("[louder]: +3 dB on the following speech segment")
+                        Button("Quieter") { insert(PerformanceDirection.quieter) }.help("[quieter]: −3 dB on the following speech segment")
+                    }.controlSize(.small)
+                    if PerformanceDirection.pauseInput(pauseMilliseconds) == nil {
+                        Text("Pause requires an integer from 1 to 10000 ms.").font(.caption).foregroundStyle(.orange)
+                    }
+                    Text("Loudness applies to the following speech segment until the next performance direction. It does not mean shout or whisper. Pauses split independently synthesized speech.").font(.caption2)
+                }
+            }
+            SpeechPreview(text: text, rules: rules, matchMode: matchMode,performance:performance)
         }
     }
 }

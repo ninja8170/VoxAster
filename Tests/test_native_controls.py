@@ -38,7 +38,7 @@ class NativeTextTests(unittest.TestCase):
                 result = inspect_speech(text)
                 self.assertFalse(result['can_generate'])
                 self.assertEqual(result['text'], text)
-                self.assertIn('not a native', result['issues'][0]['message'])
+                self.assertTrue(any('native' in i['message'] or 'app-level' in i['message'] for i in result['issues']))
 
     def test_valid_cmu_and_pinyin_remain_intact(self):
         text = 'The [B EY1 S] and [K AE0 T] [AH2] 打ZHE2出售 NI3 HAO3.'
@@ -53,12 +53,15 @@ class NativeTextTests(unittest.TestCase):
         self.assertTrue(any('pinyin' in x['message'] for x in inspect_speech('ZHE0')['issues']))
 
     def test_markdown_and_ordinary_brackets_warn_without_rewriting(self):
-        for text in ['**emphasis**', '*stage direction*', '# Heading', '[ordinary note]', '(whispering)']:
+        for text in ['**emphasis**', '*stage direction*', '# Heading', '(whispering)']:
             with self.subTest(text=text):
                 result = inspect_speech(text)
                 self.assertTrue(result['can_generate'])
                 self.assertTrue(result['issues'])
                 self.assertEqual(result['text'], text)
+
+    def test_unknown_brackets_are_now_blocked(self):
+        self.assertFalse(inspect_speech('[ordinary note]')['can_generate'])
 
     def test_default_whole_words_and_explicit_legacy_substrings(self):
         text = 'bass ambassador bassline bass. Bass'

@@ -44,6 +44,13 @@ class GenerationRequest(BaseModel):
             raise ValueError('Speech text must not be empty.')
         return value.strip()
 
+    @field_validator('ref_text')
+    @classmethod
+    def validate_reference_markup(cls, value):
+        from performance_script import parse_script
+        parse_script(value)  # Validate only; never rewrite the reference transcript.
+        return value
+
     @field_validator('segments')
     @classmethod
     def nonempty_segments(cls, value):

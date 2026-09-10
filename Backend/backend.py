@@ -49,7 +49,7 @@ def startup():
 
 @app.get("/health")
 def health():
-    return {"ok": MODEL is not None, "device": "mps", "provenance": PROVENANCE, "generation_contract": 2}
+    return {"ok": MODEL is not None, "device": "mps", "provenance": PROVENANCE, "generation_contract": 3}
 
 
 def apply_seed(seed):
@@ -341,6 +341,66 @@ async def generate_variants(request: GenerationRequest = Depends(generation_form
                         for i in range(request.count)]}
 
 
+# Performance productions use a distinct, strict app-level route. No raw
+# performance script is accepted by the ordinary generation request adapter.
+from performance import ProductionStore, PERFORMANCE_CAPABILITIES
+from performance_script import compile_script
+import json
+
+PERFORMANCE = ProductionStore(DATA_ROOT / 'performance')
+
+@app.post("/performance/preview")
+async def performance_preview(text: str = Form(''), pronunciations: str = Form(''),
+                              pronunciation_mode: str = Form('words')):
+    try:
+        plan = compile_script(text, pronunciations, pronunciation_mode)
+        issues = [i for s in plan['segments'] for i in s.get('issues',[])]
+        return dict(text='\n'.join(s['text'] if s['kind']=='speech' else f"Silence: {s['milliseconds']} ms ({s['samples']} samples)" for s in plan['segments']),
+                    issues=issues, can_generate=True, **plan)
+    except ValueError as exc:
+        return dict(text='', issues=[dict(level='error',message=str(exc))], can_generate=False)
+
+@app.post("/performance/prepare")
+async def performance_prepare(script: str = Form(...), settings: str = Form(...),
+                              engine: str = Form('OmniVoice Zero-Shot'), ref_audio: UploadFile = File(...)):
+    try:
+        configuration = json.loads(settings)
+        if not isinstance(configuration, dict):
+            raise ValueError('Settings must be a generation-request object.')
+        return PERFORMANCE.create(script, configuration, await ref_audio.read(), ref_audio.filename, engine)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+@app.get("/performance/capabilities")
+async def performance_capabilities():
+    return PERFORMANCE_CAPABILITIES
+
+@app.get("/performance")
+async def performance_list():
+    return PERFORMANCE.list()
+
+@app.get("/performance/{production_id}")
+async def performance_get(production_id: str):
+    try:
+        return PERFORMANCE.read(production_id)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+@app.post("/performance/{production_id}/render/{segment_id}")
+async def performance_render(production_id: str, segment_id: str):
+    try:
+        return PERFORMANCE.render(production_id, segment_id, MODEL, generate_omni)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+@app.post("/performance/{production_id}/rebuild")
+async def performance_rebuild(production_id: str):
+    try:
+        return PERFORMANCE.rebuild(production_id)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
 # ---------------------------------------------------------------------------
 # Engine Lab: OmniVoice vs isolated F5-TTS
 # ---------------------------------------------------------------------------
@@ -376,10 +436,7 @@ def _load_trained_engines():
         return []
 
 def _save_trained_engines(items):
-    TRAINED_ENGINES_REGISTRY.write_text(
-        json.dumps(items, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    atomic_json(TRAINED_ENGINES_REGISTRY, items)
 
 def _trained_engine_map():
     return {item["name"]: item["path"] for item in _load_trained_engines()}
@@ -550,6 +607,7 @@ import json
 import subprocess
 import threading
 import math
+from training_safety import OperationLock, staging_directory, publish_directory, atomic_json, reject_overlap, managed_destination, validate_model, validate_dataset, reject_legacy_training
 
 PERSONAL_ROOT = DATA_ROOT / "personal-voice"
 PERSONAL_DATA = PERSONAL_ROOT / "dataset"
@@ -607,125 +665,150 @@ def _quality(y, sr):
 
     return True, "ok", duration
 
+def training_operation():
+    # Also protects a still-tracked process started by an older launcher.
+    if TRAIN_PROC is not None and TRAIN_PROC.poll() is None:
+        raise RuntimeError("Training is active; preparation and publishing are unavailable until it exits.")
+    reject_legacy_training(PERSONAL_ROOT)
+    return OperationLock(PERSONAL_ROOT)
+
+
 @app.post("/personal/prepare")
 async def personal_prepare(request: dict):
     try:
-        import random
-        import soundfile as sf
-
         folder = Path(request.get("folder", "")).expanduser()
-        language = request.get("language_id", "en")
-        auto_transcribe = bool(request.get("auto_transcribe", False))
-
-        if not folder.exists() or not folder.is_dir():
+        if not request.get("folder") or not folder.is_dir():
             raise ValueError("Choose a valid recording folder.")
+        reject_overlap(folder, PERSONAL_DATA)
+        managed_destination(PERSONAL_DATA, PERSONAL_ROOT)
+        with training_operation():
+            with staging_directory(PERSONAL_DATA) as stage:
+                result = _prepare_dataset(stage, request)
+                if isinstance(result, JSONResponse):
+                    return result
+                validate_dataset(stage, PERSONAL_DATA)
+                publish_directory(stage, PERSONAL_DATA)
+                return result
+    except Exception as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
 
-        # Clean only the generated prepared dataset, not source recordings.
-        if PERSONAL_AUDIO.exists():
-            for p in PERSONAL_AUDIO.glob("*.wav"):
-                p.unlink()
-        PERSONAL_AUDIO.mkdir(parents=True, exist_ok=True)
 
-        files = []
-        for ext in ("*.wav", "*.flac", "*.mp3", "*.m4a", "*.aiff", "*.aif"):
-            files.extend(folder.rglob(ext))
-        files = sorted(set(files))
+def _prepare_dataset(stage, request):
+    import random
+    import soundfile as sf
 
-        if not files:
-            raise ValueError("No supported audio files were found.")
+    folder = Path(request.get("folder", "")).expanduser()
+    language = request.get("language_id", "en")
+    auto_transcribe = bool(request.get("auto_transcribe", False))
 
-        accepted, rejected = [], []
-        total_duration = 0.0
+    if not folder.exists() or not folder.is_dir():
+        raise ValueError("Choose a valid recording folder.")
 
-        for i, path in enumerate(files):
-            try:
-                y, sr = _read_audio(path)
-                ok, reason, duration = _quality(y, sr)
-                if not ok:
-                    rejected.append({"file": str(path), "reason": reason})
-                    continue
+    audio_dir = stage / "audio"
+    audio_dir.mkdir()
 
-                txt_path = path.with_suffix(".txt")
-                text = txt_path.read_text(encoding="utf-8").strip() if txt_path.exists() else ""
-                if not text and auto_transcribe:
-                    text = _transcribe_local(path)
-                if not text:
-                    rejected.append({"file": str(path), "reason": "missing_transcript"})
-                    continue
+    files = []
+    for ext in ("*.wav", "*.flac", "*.mp3", "*.m4a", "*.aiff", "*.aif"):
+        files.extend(folder.rglob(ext))
+    files = sorted(set(files))
+    for path in files:
+        reject_overlap(path, PERSONAL_DATA)
 
-                out = PERSONAL_AUDIO / f"clip_{len(accepted):05d}.wav"
-                # Peak-normalize accepted clips conservatively.
-                import numpy as np
-                peak = float(np.max(np.abs(y))) if len(y) else 1.0
-                if peak > 0:
-                    target_peak = 0.90
-                    gain = target_peak / peak
-                    # Avoid extreme amplification of very low-level noise.
-                    gain = min(gain, 12.0)
-                    y = y * gain
-                sf.write(str(out), y, sr, subtype="PCM_16")
+    if not files:
+        raise ValueError("No supported audio files were found.")
 
-                accepted.append({
-                    "id": out.stem,
-                    "audio_path": str(out),
-                    "text": text,
-                    "language_id": language,
-                })
-                total_duration += duration
-            except Exception as e:
-                rejected.append({"file": str(path), "reason": f"{type(e).__name__}: {e}"})
+    accepted, rejected = [], []
+    total_duration = 0.0
 
-        rejection_details = [
-            f"{Path(item['file']).name}: {item['reason']}"
-            for item in rejected
-        ]
+    for i, path in enumerate(files):
+        try:
+            y, sr = _read_audio(path)
+            import numpy as np
+            if not np.isfinite(y).all():
+                raise ValueError("nonfinite_audio")
+            ok, reason, duration = _quality(y, sr)
+            if not ok:
+                rejected.append({"file": str(path), "reason": reason})
+                continue
 
-        # Always persist diagnostics, even when preparation cannot continue.
-        (PERSONAL_DATA / "rejected.json").write_text(
-            json.dumps(rejected, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+            txt_path = path.with_suffix(".txt")
+            text = txt_path.read_text(encoding="utf-8").strip() if txt_path.exists() else ""
+            if not text and auto_transcribe:
+                text = _transcribe_local(path)
+            if not text:
+                rejected.append({"file": str(path), "reason": "missing_transcript"})
+                continue
+
+            out = audio_dir / f"clip_{len(accepted):05d}.wav"
+            # Peak-normalize accepted clips conservatively.
+            import numpy as np
+            peak = float(np.max(np.abs(y))) if len(y) else 1.0
+            if peak > 0:
+                target_peak = 0.90
+                gain = target_peak / peak
+                # Avoid extreme amplification of very low-level noise.
+                gain = min(gain, 12.0)
+                y = y * gain
+            sf.write(str(out), y, sr, subtype="PCM_16")
+
+            accepted.append({
+                "id": out.stem,
+                "audio_path": str(PERSONAL_AUDIO / out.name),
+                "text": text,
+                "language_id": language,
+            })
+            total_duration += duration
+        except Exception as e:
+            raise RuntimeError(f"Dataset preparation failed for {path.name}: {e}. Previous dataset preserved.") from e
+
+    rejection_details = [
+        f"{Path(item['file']).name}: {item['reason']}"
+        for item in rejected
+    ]
+
+    # Always persist diagnostics, even when preparation cannot continue.
+    (stage / "rejected.json").write_text(
+        json.dumps(rejected, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    if len(accepted) < 2:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "Need at least 2 accepted clips after quality/transcript checks.",
+                "accepted": len(accepted),
+                "rejected": len(rejected),
+                "minutes": total_duration / 60.0,
+                "rejection_details": rejection_details,
+            },
         )
 
-        if len(accepted) < 2:
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "error": "Need at least 2 accepted clips after quality/transcript checks.",
-                    "accepted": len(accepted),
-                    "rejected": len(rejected),
-                    "minutes": total_duration / 60.0,
-                    "rejection_details": rejection_details,
-                },
-            )
+    rng = random.Random(42)
+    rng.shuffle(accepted)
+    dev_n = max(1, round(len(accepted) * 0.1))
+    dev = accepted[:dev_n]
+    train = accepted[dev_n:]
+    if not train:
+        train, dev = accepted[:-1], accepted[-1:]
 
-        rng = random.Random(42)
-        rng.shuffle(accepted)
-        dev_n = max(1, round(len(accepted) * 0.1))
-        dev = accepted[:dev_n]
-        train = accepted[dev_n:]
-        if not train:
-            train, dev = accepted[:-1], accepted[-1:]
+    with (stage / "train.jsonl").open("w", encoding="utf-8") as f:
+        for row in train:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    with (stage / "dev.jsonl").open("w", encoding="utf-8") as f:
+        for row in dev:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
-        with PERSONAL_TRAIN.open("w", encoding="utf-8") as f:
-            for row in train:
-                f.write(json.dumps(row, ensure_ascii=False) + "\n")
-        with PERSONAL_DEV.open("w", encoding="utf-8") as f:
-            for row in dev:
-                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return {
+        "accepted": len(accepted),
+        "rejected": len(rejected),
+        "minutes": total_duration / 60.0,
+        "train_manifest": str(PERSONAL_TRAIN),
+        "dev_manifest": str(PERSONAL_DEV),
+        "rejection_details": rejection_details,
+    }
 
-        return {
-            "accepted": len(accepted),
-            "rejected": len(rejected),
-            "minutes": total_duration / 60.0,
-            "train_manifest": str(PERSONAL_TRAIN),
-            "dev_manifest": str(PERSONAL_DEV),
-            "rejection_details": rejection_details,
-        }
-    except Exception as e:
-        traceback.print_exc()
-        return JSONResponse(status_code=500, content={"error": f"{type(e).__name__}: {e}"})
-
-def _launch_training_script(script):
+def _launch_training_script(script, lock_fd):
     global TRAIN_PROC, TRAIN_EXIT, TRAIN_LOG_HANDLE
 
     TRAIN_EXIT = None
@@ -746,6 +829,7 @@ def _launch_training_script(script):
         stderr=subprocess.STDOUT,
         text=True,
         env=env,
+        pass_fds=(lock_fd,),
     )
     return TRAIN_PROC
 
@@ -765,7 +849,8 @@ def personal_train():
         if not PERSONAL_TRAIN.exists():
             raise RuntimeError("Prepare the dataset first.")
 
-        proc = _launch_training_script(script)
+        with training_operation() as lease:
+            proc = _launch_training_script(script, lease.fd)
         return {"running": True, "pid": proc.pid}
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": f"{type(e).__name__}: {e}"})
@@ -773,118 +858,81 @@ def personal_train():
 
 PERSONAL_MERGED = PERSONAL_ROOT / "merged-model"
 
+def completed_checkpoint():
+    checkpoints = sorted(PERSONAL_OUT.glob("checkpoint-*"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for checkpoint in checkpoints:
+        if (checkpoint / "adapter_config.json").is_file() and (checkpoint / "adapter_model.safetensors").is_file():
+            return checkpoint
+    raise RuntimeError("No completed LoRA checkpoint was found (configuration and adapter weights required).")
+
+
+def merge_into(checkpoint, stage):
+    reject_overlap(checkpoint, stage)
+    cmd = [str(TRAIN_VENV / "bin" / "omnivoice-merge-lora"),
+        "--base_model", "k2-fsa/OmniVoice", "--lora_adapter", str(checkpoint), "--output_dir", str(stage)]
+    env = os.environ.copy()
+    env["PATH"] = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:" + env.get("PATH", "")
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=1800)
+    if proc.returncode != 0:
+        raise RuntimeError((proc.stderr or proc.stdout)[-5000:])
+    validate_model(stage)
+
+
 @app.post("/personal/merge")
 def personal_merge():
     try:
-        if not PERSONAL_OUT.exists():
-            raise RuntimeError("No Personal Voice training output exists.")
+        with training_operation():
+            checkpoint = completed_checkpoint()
+            managed_destination(PERSONAL_MERGED, PERSONAL_ROOT)
+            reject_overlap(checkpoint, PERSONAL_MERGED)
+            reject_overlap(PERSONAL_DATA, PERSONAL_MERGED)
+            with staging_directory(PERSONAL_MERGED) as stage:
+                merge_into(checkpoint, stage)
+                publish_directory(stage, PERSONAL_MERGED)
+        return {"ok": True, "checkpoint": str(checkpoint), "merged_model": str(PERSONAL_MERGED)}
+    except Exception as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
 
-        checkpoints = sorted(
-            PERSONAL_OUT.glob("checkpoint-*"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        checkpoints = [p for p in checkpoints if (p / "adapter_config.json").exists()]
-        if not checkpoints:
-            raise RuntimeError("No completed LoRA checkpoint was found.")
-
-        checkpoint = checkpoints[0]
-        if PERSONAL_MERGED.exists():
-            shutil.rmtree(PERSONAL_MERGED)
-
-        cmd = [
-            str(TRAIN_VENV / "bin" / "omnivoice-merge-lora"),
-            "--base_model", "k2-fsa/OmniVoice",
-            "--lora_adapter", str(checkpoint),
-            "--output_dir", str(PERSONAL_MERGED),
-        ]
-        env = os.environ.copy()
-        env["PATH"] = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:" + env.get("PATH", "")
-        proc = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=1800)
-        if proc.returncode != 0:
-            raise RuntimeError((proc.stderr or proc.stdout)[-5000:])
-
-        return {
-            "ok": True,
-            "checkpoint": str(checkpoint),
-            "merged_model": str(PERSONAL_MERGED),
-        }
-    except Exception as e:
-        traceback.print_exc()
-        return JSONResponse(status_code=500, content={"error": f"{type(e).__name__}: {e}"})
 
 @app.post("/personal/save-engine")
 def personal_save_engine(request: dict):
+    from datetime import datetime, timezone
     try:
-        import re as _re
-        from datetime import datetime, timezone
-
         name = str(request.get("name", "")).strip()
         if not name:
             raise ValueError("Enter a name for the trained voice.")
-
-        if not PERSONAL_OUT.exists():
-            raise RuntimeError("No completed training output exists.")
-
-        checkpoints = sorted(
-            PERSONAL_OUT.glob("checkpoint-*"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        checkpoints = [p for p in checkpoints if (p / "adapter_config.json").exists()]
-        if not checkpoints:
-            raise RuntimeError("No completed LoRA checkpoint was found.")
-
-        checkpoint = checkpoints[0]
-
-        safe = _re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-._") or "trained-voice"
-        destination = TRAINED_ENGINES_DIR / safe
-
-        # Keep names unique and deterministic.
-        existing = _load_trained_engines()
-        existing_same_name = next((x for x in existing if x.get("name") == name), None)
-        if existing_same_name:
-            destination = Path(existing_same_name["path"])
-
-        if destination.exists():
-            shutil.rmtree(destination)
-
-        cmd = [
-            str(TRAIN_VENV / "bin" / "omnivoice-merge-lora"),
-            "--base_model", "k2-fsa/OmniVoice",
-            "--lora_adapter", str(checkpoint),
-            "--output_dir", str(destination),
-        ]
-        env = os.environ.copy()
-        env["PATH"] = "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:" + env.get("PATH", "")
-        proc = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=1800)
-        if proc.returncode != 0:
-            raise RuntimeError((proc.stderr or proc.stdout)[-5000:])
-
-        entry = {
-            "name": name,
-            "path": str(destination),
-            "checkpoint": str(checkpoint),
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
-
-        existing = [x for x in existing if x.get("name") != name]
-        existing.append(entry)
-        _save_trained_engines(existing)
-
-        return {
-            "ok": True,
-            "name": name,
-            "path": str(destination),
-            "checkpoint": str(checkpoint),
-        }
-
-    except Exception as e:
-        traceback.print_exc()
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"{type(e).__name__}: {e}"},
-        )
+        with training_operation():
+            checkpoint = completed_checkpoint()
+            # Read strictly: never overwrite an unreadable registry with an empty list.
+            existing = json.loads(TRAINED_ENGINES_REGISTRY.read_text()) if TRAINED_ENGINES_REGISTRY.exists() else []
+            if not isinstance(existing, list) or any(not isinstance(e, dict) or not e.get('name') or not e.get('path') for e in existing):
+                raise ValueError("Trained-engine registry needs repair; existing engines were preserved.")
+            matches = [e for e in existing if e['name'] == name]
+            if len(matches) > 1:
+                raise ValueError("Duplicate engine names need review before replacement.")
+            previous = matches[0] if matches else None
+            if previous:
+                managed_destination(previous['path'], TRAINED_ENGINES_DIR)
+            engine_id = uuid.UUID(previous['id']).hex if previous and previous.get('id') else uuid.uuid4().hex
+            # Immutable revision path. The atomic registry update is the commit;
+            # previous model directories are never removed by this operation.
+            destination = TRAINED_ENGINES_DIR / (engine_id + '-' + uuid.uuid4().hex)
+            managed_destination(destination, TRAINED_ENGINES_DIR)
+            reject_overlap(checkpoint, destination)
+            reject_overlap(PERSONAL_DATA, destination)
+            with staging_directory(destination) as stage:
+                merge_into(checkpoint, stage)
+                publish_directory(stage, destination)
+            entry = dict(id=engine_id, name=name, path=str(destination), checkpoint=str(checkpoint),
+                         created_at=datetime.now(timezone.utc).isoformat())
+            try:
+                _save_trained_engines([e for e in existing if e['name'] != name] + [entry])
+            except Exception:
+                shutil.rmtree(destination, ignore_errors=True)
+                raise
+        return {"ok": True, "name": name, "path": str(destination), "checkpoint": str(checkpoint)}
+    except Exception as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
 
 @app.get("/personal/model-status")
 def personal_model_status():

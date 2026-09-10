@@ -5,6 +5,7 @@ import AppKit
 final class CaptureProtocol: URLProtocol {
     static var captured: [[String: String]] = []
     static var response: [String: Any] = [:]
+    static var routedResponses: [String: Any] = [:]
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "127.0.0.1" }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
@@ -20,7 +21,7 @@ final class CaptureProtocol: URLProtocol {
             stream.close()
         }
         let body = String(decoding: data, as: UTF8.self)
-        let boundary = request.value(forHTTPHeaderField: "Content-Type")!.components(separatedBy: "boundary=").last!
+        let boundary = request.value(forHTTPHeaderField: "Content-Type")?.components(separatedBy: "boundary=").last ?? "no-multipart-body"
         var fields = ["route": request.url!.path]
         for part in body.components(separatedBy: "--" + boundary) {
             guard let begin = part.range(of: "name=\""), let end = part[begin.upperBound...].firstIndex(of: "\""),
@@ -31,7 +32,7 @@ final class CaptureProtocol: URLProtocol {
             fields[name] = value
         }
         Self.captured.append(fields)
-        let dataOut = try! JSONSerialization.data(withJSONObject: Self.response)
+        let dataOut = try! JSONSerialization.data(withJSONObject: Self.routedResponses[request.url!.path] ?? Self.response)
         client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: dataOut)
         client?.urlProtocolDidFinishLoading(self)
@@ -135,6 +136,7 @@ struct Phase1Tests {
         check(CaptureProtocol.captured.last!["pronunciations"] == model.clonePronunciationRules, "Omni comparison uses clone pronunciation")
         check(CaptureProtocol.captured.last!["language"] == "English", "Omni comparison language")
 
+        model.analysisBinding = ReferenceAnalysisBinding(identity: model.referenceIdentity!, transcript: model.referenceText, requestID: UUID())
         model.referenceAnalysisReady = true
         model.recommendedSpeed = 0.87; model.recommendedSteps = 40
         model.recommendedGuidance = 2.2; model.recommendedDenoise = false
@@ -255,6 +257,8 @@ struct Phase1Tests {
         check(inspection?.issues.first?.level == "warning", "preview warnings available to editor")
         check(CaptureProtocol.captured.last?["route"] == "/preview-speech", "editor uses preview API")
         check(CaptureProtocol.captured.last?["text"] == "bass [laughter]" && CaptureProtocol.captured.last?["pronunciations"] == "bass=base" && CaptureProtocol.captured.last?["pronunciation_mode"] == "words", "preview forwards current text and rule mode")
-        print("PASS: \(checks) Swift UI/request assertions across Clone, Design, Variants, Long Form, Retry and Engine Lab")
+        try performanceTests(model:model, output:output)
+        try reliabilityTests()
+        print("PASS: \(checks) Swift UI/request assertions across Clone, Design, Variants, Long Form, Retry, Engine Lab and Performance")
     }
 }
