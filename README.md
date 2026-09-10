@@ -6,9 +6,11 @@ OmniVoice Mac turns the open-source [k2-fsa OmniVoice](https://github.com/k2-fsa
 
 Instead of operating OmniVoice through scripts or a browser interface, OmniVoice Mac provides a complete SwiftUI studio for creating voices, generating speech, managing projects, benchmarking engines and training personalised LoRA voice models directly on Apple Silicon.
 
-> **Current version:** v3.4.5  
+> **Current version:** v3.5.1
 > **Platform:** macOS / Apple Silicon  
 > **Status:** Active development
+
+Phase 1 reconciles the Native 3.5 distribution, fixes generation forwarding and editable Long Form requests, and exposes pinned runtime provenance. See [the Phase 1 contract, build/test instructions and limitations](PHASE1.md). Build with `./build.command`; verify with `./test.command`. These commands do not install or upgrade dependencies.
 
 ---
 
@@ -406,11 +408,19 @@ OmniVoice-Mac/
 │   └── App icon assets
 │
 ├── Backend/
-│   └── backend.py
+│   ├── backend.py
+│   ├── generation.py
+│   ├── provenance.py
+│   └── runtime.json
 │
 ├── Sources/
-│   └── OmniVoice.swift
+│   ├── OmniVoice.swift
+│   └── GenerationRequest.swift
 │
+├── Tests/
+├── build.command
+├── test.command
+├── PHASE1.md
 ├── install.command
 ├── setup-personal-training.command
 ├── repair-mac-training.command

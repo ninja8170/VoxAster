@@ -1,0 +1,7 @@
+{
+  "native_app_version": "3.5.1",
+  "model_id": "k2-fsa/OmniVoice",
+  "model_revision": "c5fdb5ccb189668d56333f77ba2629f4cd7535f4",
+  "expected_package_version": "0.2.1",
+  "expected_package_commit": "08be0b4ccbac3e13e374e86fbfead4b4cac343e2"
+}

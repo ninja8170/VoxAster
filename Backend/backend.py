@@ -4,66 +4,96 @@ import uuid
 import traceback
 from pathlib import Path
 
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException
 from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 import uvicorn
 import torch
 import soundfile as sf
 
 from omnivoice import OmniVoice, OmniVoiceGenerationConfig
 
+from generation import GenerationRequest, generation_form, apply_pronunciations, OMNI_CAPABILITIES, F5_CAPABILITIES
+from provenance import MANIFEST, resolve_base_model, runtime_provenance
+
 app = FastAPI()
+@app.exception_handler(RequestValidationError)
+async def invalid_request(_request, exc):
+    return JSONResponse(status_code=422, content={"error": str(exc)})
+
+@app.exception_handler(Exception)
+async def inference_error(_request, exc):
+    traceback.print_exception(exc)
+    return JSONResponse(status_code=500, content={"error": f"{type(exc).__name__}: {exc}"})
+
+PROVENANCE = {}
+DATA_ROOT = Path(os.environ.get("OMNIVOICE_DATA_ROOT", str(Path.home() / "Documents" / "OmniVoice-Mac")))
 MODEL = None
 
-OUTPUT_DIR = Path.home() / "Documents" / "OmniVoice-Mac" / "outputs"
+OUTPUT_DIR = DATA_ROOT / "outputs"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 @app.on_event("startup")
 def startup():
-    global MODEL
+    global MODEL, PROVENANCE
+    model_path = resolve_base_model()
+    PROVENANCE = runtime_provenance(model_path)
+    if (PROVENANCE['package_version'] != MANIFEST['expected_package_version'] or
+        PROVENANCE['package_commit'] != MANIFEST['expected_package_commit']):
+        raise RuntimeError("OmniVoice runtime differs from the verified package. Review provenance before using this build.")
     MODEL = OmniVoice.from_pretrained(
-        "k2-fsa/OmniVoice",
+        str(model_path),
         device_map="mps",
         dtype=torch.float16,
     )
 
 @app.get("/health")
 def health():
-    return {"ok": MODEL is not None, "device": "mps"}
+    return {"ok": MODEL is not None, "device": "mps", "provenance": PROVENANCE, "generation_contract": 1}
 
-def generation_config(steps, guidance):
-    return OmniVoiceGenerationConfig(
-        num_step=int(steps),
-        guidance_scale=float(guidance),
-        denoise=True,
-        preprocess_prompt=True,
-        postprocess_output=True,
-    )
+
+def apply_seed(seed):
+    if seed <= 0:
+        return
+    import random
+    import numpy as np
+    random.seed(seed)
+    np.random.seed(seed % (2**32 - 1))
+    torch.manual_seed(seed)
+    if torch.backends.mps.is_available():
+        torch.mps.manual_seed(seed)
 
 def save_audio(audio):
     output = OUTPUT_DIR / f"omnivoice-{uuid.uuid4().hex[:8]}.wav"
     sf.write(str(output), audio[0], 24000)
     return str(output)
 
-def apply_pronunciations(text, rules):
-    for line in rules.splitlines():
-        if "=" in line:
-            a, b = line.split("=", 1)
-            if a.strip() and b.strip():
-                text = text.replace(a.strip(), b.strip())
-    return text
+def generate_omni(model, request, prompt=None, text=None, index=0):
+    apply_seed(request.seed_for(index))
+    kwargs = request.omni_kwargs(OmniVoiceGenerationConfig, text)
+    if prompt is not None:
+        kwargs['voice_clone_prompt'] = prompt
+    if request.instruct.strip():
+        kwargs['instruct'] = request.instruct.strip()
+    return model.generate(**kwargs)
 
-@app.post("/generate-clone")
-async def generate_clone(
-    text: str = Form(...),
+
+async def reference_prompt(model, request, upload):
+    suffix = Path(upload.filename or "reference.wav").suffix or ".wav"
+    with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
+        tmp.write(await upload.read())
+        tmp.flush()
+        return model.create_voice_clone_prompt(ref_audio=tmp.name,
+            ref_text=request.ref_text.strip() or None)
+
+
+@app.post("/analyze-reference")
+async def analyze_reference(
     ref_text: str = Form(""),
-    pronunciations: str = Form(""),
-    language: str = Form("Auto detect"),
-    speed: float = Form(1.0),
-    steps: int = Form(32),
-    guidance: float = Form(2.0),
     ref_audio: UploadFile = File(...),
 ):
+    import numpy as np
+
     ref_path = None
     try:
         suffix = Path(ref_audio.filename or "reference.wav").suffix or ".wav"
@@ -71,22 +101,167 @@ async def generate_clone(
             tmp.write(await ref_audio.read())
             ref_path = tmp.name
 
-        prompt = MODEL.create_voice_clone_prompt(
-            ref_audio=ref_path,
-            ref_text=(ref_text.strip() or None),
-        )
+        audio, sr = sf.read(ref_path, always_2d=False)
+        audio = np.asarray(audio, dtype=np.float32)
+        if audio.ndim > 1:
+            audio = np.mean(audio, axis=1)
 
-        audio = MODEL.generate(
-            text=apply_pronunciations(text.strip(), pronunciations),
-            voice_clone_prompt=prompt,
-            generation_config=generation_config(steps, guidance),
-            speed=float(speed),
-        )
+        if audio.size == 0 or sr <= 0:
+            raise ValueError("Reference audio is empty.")
 
-        return {"output": save_audio(audio)}
+        # Keep analysis bounded and fast.
+        max_samples = int(sr * 60)
+        audio = audio[:max_samples]
+
+        duration = float(len(audio) / sr)
+        peak = float(np.max(np.abs(audio)) + 1e-12)
+        rms = float(np.sqrt(np.mean(audio ** 2)) + 1e-12)
+        peak_db = float(20 * np.log10(peak))
+        rms_db = float(20 * np.log10(rms))
+        clipping_ratio = float(np.mean(np.abs(audio) >= 0.995))
+
+        # 25 ms RMS frames, 10 ms hop.
+        frame = max(64, int(sr * 0.025))
+        hop = max(32, int(sr * 0.010))
+        frame_rms = []
+        frames = []
+        for i in range(0, max(1, len(audio) - frame + 1), hop):
+            x = audio[i:i+frame]
+            if len(x) < frame:
+                break
+            frames.append(x)
+            frame_rms.append(float(np.sqrt(np.mean(x*x)) + 1e-12))
+
+        if frame_rms:
+            dbs = 20 * np.log10(np.asarray(frame_rms) + 1e-12)
+            noise_floor = float(np.percentile(dbs, 20))
+            threshold = max(-42.0, noise_floor + 10.0)
+            active = dbs > threshold
+            speech_ratio = float(np.mean(active))
+        else:
+            dbs = np.asarray([])
+            active = np.asarray([], dtype=bool)
+            noise_floor = -60.0
+            speech_ratio = 0.0
+
+        pause_ratio = float(max(0.0, min(1.0, 1.0 - speech_ratio)))
+
+        # Lightweight autocorrelation pitch estimate on active frames.
+        pitches = []
+        min_f, max_f = 65.0, 350.0
+        min_lag = max(1, int(sr / max_f))
+        max_lag = max(min_lag + 1, int(sr / min_f))
+
+        for idx, x in enumerate(frames[::4]):
+            source_idx = idx * 4
+            if len(active) > source_idx and not active[source_idx]:
+                continue
+
+            x = x - np.mean(x)
+            energy = np.sqrt(np.mean(x*x))
+            if energy < 1e-4:
+                continue
+
+            corr = np.correlate(x, x, mode="full")[len(x)-1:]
+            upper = min(max_lag, len(corr)-1)
+            if upper <= min_lag:
+                continue
+
+            segment = corr[min_lag:upper+1]
+            lag = int(np.argmax(segment)) + min_lag
+            if corr[0] > 0 and corr[lag] / corr[0] >= 0.25:
+                hz = sr / lag
+                if min_f <= hz <= max_f:
+                    pitches.append(float(hz))
+
+        if pitches:
+            pitch_hz = float(np.median(pitches))
+            pitch_range_hz = float(np.percentile(pitches, 90) - np.percentile(pitches, 10))
+        else:
+            pitch_hz = 0.0
+            pitch_range_hz = 0.0
+
+        words = len([w for w in ref_text.strip().split() if w])
+        wpm = float(words / duration * 60.0) if words > 0 and duration > 0 else 0.0
+
+        if wpm > 0:
+            if wpm < 115: pace_label = "Slow"
+            elif wpm < 165: pace_label = "Natural"
+            elif wpm < 205: pace_label = "Fast"
+            else: pace_label = "Very fast"
+            recommended_speed = max(0.82, min(1.18, wpm / 155.0))
+        else:
+            # Without a transcript this is intentionally a rough speech-density estimate.
+            if speech_ratio < 0.48:
+                pace_label = "Measured"
+                recommended_speed = 0.92
+            elif speech_ratio < 0.68:
+                pace_label = "Natural"
+                recommended_speed = 1.00
+            else:
+                pace_label = "Continuous"
+                recommended_speed = 1.06
+
+        # Reference quality score: signal level, clipping, usable duration and silence.
+        quality = 100
+        if duration < 3: quality -= 25
+        elif duration < 5: quality -= 8
+        if duration > 30: quality -= 4
+        if rms_db < -38: quality -= 24
+        elif rms_db < -30: quality -= 10
+        if peak_db > -0.15 or clipping_ratio > 0.002: quality -= 25
+        elif clipping_ratio > 0.0002: quality -= 10
+        if speech_ratio < 0.35: quality -= 18
+        if noise_floor > -35: quality -= 15
+        quality = int(max(0, min(100, quality)))
+
+        if quality >= 85: quality_label = "Excellent"
+        elif quality >= 70: quality_label = "Good"
+        elif quality >= 50: quality_label = "Fair"
+        else: quality_label = "Poor"
+
+        # Heuristic recommendations, deliberately kept within conservative ranges.
+        if quality >= 80:
+            recommended_steps = 40
+            recommended_guidance = 2.2
+        elif quality >= 60:
+            recommended_steps = 36
+            recommended_guidance = 2.0
+        else:
+            recommended_steps = 32
+            recommended_guidance = 1.8
+
+        recommended_denoise = bool(noise_floor > -48 or rms_db < -32)
+
+        return {
+            "duration": round(duration, 3),
+            "pitch_hz": round(pitch_hz, 1),
+            "pitch_range_hz": round(pitch_range_hz, 1),
+            "rms_db": round(rms_db, 2),
+            "peak_db": round(peak_db, 2),
+            "speech_ratio": round(speech_ratio, 3),
+            "pause_ratio": round(pause_ratio, 3),
+            "noise_floor_db": round(noise_floor, 2),
+            "clipping_ratio": round(clipping_ratio, 6),
+            "wpm": round(wpm, 1),
+            "pace_label": pace_label,
+            "quality_score": quality,
+            "quality_label": quality_label,
+            "recommended": {
+                "speed": round(recommended_speed, 2),
+                "steps": float(recommended_steps),
+                "guidance": round(recommended_guidance, 1),
+                "denoise": recommended_denoise,
+            },
+            "note": "Recommendations are heuristic starting points; Engine Lab remains the final quality test.",
+        }
+
     except Exception as e:
         traceback.print_exc()
-        return JSONResponse(status_code=500, content={"error": f"{type(e).__name__}: {e}"})
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"{type(e).__name__}: {e}"},
+        )
     finally:
         if ref_path:
             try:
@@ -94,28 +269,16 @@ async def generate_clone(
             except Exception:
                 pass
 
-@app.post("/generate-design")
-async def generate_design(
-    text: str = Form(...),
-    instruct: str = Form(""),
-    speed: float = Form(1.0),
-    steps: int = Form(32),
-    guidance: float = Form(2.0),
-):
-    try:
-        kwargs = dict(
-            text=text.strip(),
-            generation_config=generation_config(steps, guidance),
-            speed=float(speed),
-        )
-        if instruct.strip():
-            kwargs["instruct"] = instruct.strip()
+@app.post("/generate-clone")
+async def generate_clone(request: GenerationRequest = Depends(generation_form),
+                         ref_audio: UploadFile = File(...)):
+    prompt = await reference_prompt(MODEL, request, ref_audio)
+    return {"output": save_audio(generate_omni(MODEL, request, prompt))}
 
-        audio = MODEL.generate(**kwargs)
-        return {"output": save_audio(audio)}
-    except Exception as e:
-        traceback.print_exc()
-        return JSONResponse(status_code=500, content={"error": f"{type(e).__name__}: {e}"})
+
+@app.post("/generate-design")
+async def generate_design(request: GenerationRequest = Depends(generation_form)):
+    return {"output": save_audio(generate_omni(MODEL, request))}
 
 
 def split_script(text, max_chars=420):
@@ -133,67 +296,39 @@ def split_script(text, max_chars=420):
     return chunks
 
 @app.post("/generate-long")
-async def generate_long(
-    text: str = Form(...), ref_text: str = Form(""),
-    speed: float = Form(1.0), steps: int = Form(32), guidance: float = Form(2.0),
-    pronunciations: str = Form(""), ref_audio: UploadFile = File(...)
-):
+async def generate_long(request: GenerationRequest = Depends(generation_form),
+                        ref_audio: UploadFile = File(...)):
     import numpy as np
-    ref_path = None
-    try:
-        suffix = Path(ref_audio.filename or "reference.wav").suffix or ".wav"
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp.write(await ref_audio.read()); ref_path = tmp.name
-        prompt = MODEL.create_voice_clone_prompt(ref_audio=ref_path, ref_text=(ref_text.strip() or None))
-        chunks = split_script(apply_pronunciations(text, pronunciations))
-        if not chunks: raise ValueError("The script is empty.")
-        pieces, sr = [], 24000
-        silence = np.zeros(int(sr * 0.18), dtype=np.float32)
-        for i, chunk in enumerate(chunks):
-            audio = MODEL.generate(text=chunk, voice_clone_prompt=prompt,
-                generation_config=generation_config(steps, guidance), speed=float(speed))
-            pieces.append(np.asarray(audio[0], dtype=np.float32))
-            if i < len(chunks)-1: pieces.append(silence)
-        master = np.concatenate(pieces)
-        output = OUTPUT_DIR / f"omnivoice-long-{uuid.uuid4().hex[:8]}.wav"
-        sf.write(str(output), master, sr)
-        return {"output": str(output), "chunks": len(chunks)}
-    except Exception as e:
-        traceback.print_exc()
-        return JSONResponse(status_code=500, content={"error": f"{type(e).__name__}: {e}"})
-    finally:
-        if ref_path:
-            try: os.unlink(ref_path)
-            except Exception: pass
+    # Explicit segments are authoritative: do not re-split edited text.
+    chunks = request.segments if request.segments is not None else split_script(request.text)
+    if request.retry_index is not None and request.retry_index >= len(chunks):
+        raise HTTPException(422, "Retry segment index is out of range.")
+    indices = [request.retry_index] if request.retry_index is not None else list(range(len(chunks)))
+    prompt = await reference_prompt(MODEL, request, ref_audio)
+    pieces, outputs = [], []
+    for index in indices:
+        audio = generate_omni(MODEL, request, prompt, text=chunks[index], index=index)
+        outputs.append(save_audio(audio))
+        pieces.append(np.asarray(audio[0], dtype=np.float32))
+    if request.retry_index is not None:
+        return {"output": outputs[0], "retry_index": request.retry_index, "segment_outputs": outputs}
+    # Preserve the existing Long Form master join; no new assembly system.
+    silence = np.zeros(int(24000 * 0.18), dtype=np.float32)
+    joined = []
+    for index, piece in enumerate(pieces):
+        if index:
+            joined.append(silence)
+        joined.append(piece)
+    output = save_audio([np.concatenate(joined)])
+    return {"output": output, "chunks": len(chunks), "segment_outputs": outputs}
 
 
 @app.post("/generate-variants")
-async def generate_variants(
-    text: str = Form(...), count: int = Form(2), ref_text: str = Form(""),
-    speed: float = Form(1.0), steps: int = Form(32), guidance: float = Form(2.0),
-    ref_audio: UploadFile = File(...)
-):
-    ref_path=None
-    try:
-        count=max(2,min(4,int(count)))
-        suffix=Path(ref_audio.filename or "reference.wav").suffix or ".wav"
-        with tempfile.NamedTemporaryFile(delete=False,suffix=suffix) as tmp:
-            tmp.write(await ref_audio.read());ref_path=tmp.name
-        prompt=MODEL.create_voice_clone_prompt(ref_audio=ref_path,ref_text=(ref_text.strip() or None))
-        outputs=[]
-        for _ in range(count):
-            audio=MODEL.generate(text=text.strip(),voice_clone_prompt=prompt,
-                generation_config=generation_config(steps,guidance),speed=float(speed))
-            out=OUTPUT_DIR/f"omnivoice-variant-{uuid.uuid4().hex[:8]}.wav"
-            sf.write(str(out),audio[0],24000);outputs.append(str(out))
-        return {"outputs":outputs}
-    except Exception as e:
-        traceback.print_exc()
-        return JSONResponse(status_code=500,content={"error":f"{type(e).__name__}: {e}"})
-    finally:
-        if ref_path:
-            try: os.unlink(ref_path)
-            except Exception: pass
+async def generate_variants(request: GenerationRequest = Depends(generation_form),
+                            ref_audio: UploadFile = File(...)):
+    prompt = await reference_prompt(MODEL, request, ref_audio)
+    return {"outputs": [save_audio(generate_omni(MODEL, request, prompt, index=i))
+                        for i in range(request.count)]}
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +339,7 @@ import subprocess
 
 F5_CLI = Path.home() / "Documents" / "OmniVoice-Mac" / "f5-venv" / "bin" / "f5-tts_infer-cli"
 
-PERSONAL_ROOT_EARLY = Path.home() / "Documents" / "OmniVoice-Mac" / "personal-voice"
+PERSONAL_ROOT_EARLY = DATA_ROOT / "personal-voice"
 PERSONAL_MERGED_EARLY = PERSONAL_ROOT_EARLY / "merged-model"
 
 TRAINED_ENGINES_DIR = PERSONAL_ROOT_EARLY / "engines"
@@ -261,6 +396,7 @@ def engine_lab_status():
         "f5_available": F5_CLI.exists(),
         "f5_cli": str(F5_CLI),
         "engines": engines,
+        "capabilities": {name: F5_CAPABILITIES if name == "F5-TTS" else OMNI_CAPABILITIES for name in engines},
     }
 
 def run_f5(ref_path, ref_text, text, output_path, speed):
@@ -300,11 +436,7 @@ def run_f5(ref_path, ref_text, text, output_path, speed):
 
 @app.post("/engine-lab/compare")
 async def engine_lab_compare(
-    text: str = Form(...),
-    ref_text: str = Form(""),
-    speed: float = Form(1.0),
-    steps: int = Form(32),
-    guidance: float = Form(2.0),
+    request: GenerationRequest = Depends(generation_form),
     engine_a: str = Form("OmniVoice Zero-Shot"),
     engine_b: str = Form("OmniVoice Trained"),
     ref_audio: UploadFile = File(...),
@@ -325,6 +457,10 @@ async def engine_lab_compare(
             if selected not in available:
                 raise RuntimeError(f"Engine is not available: {selected}")
 
+        # Validate both engines before either generates audio.
+        for selected in (engine_a, engine_b):
+            request.validate_engine(selected)
+
         suffix = Path(ref_audio.filename or "reference.wav").suffix or ".wav"
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             tmp.write(await ref_audio.read())
@@ -336,14 +472,9 @@ async def engine_lab_compare(
             if name == "OmniVoice Zero-Shot":
                 prompt = MODEL.create_voice_clone_prompt(
                     ref_audio=ref_path,
-                    ref_text=(ref_text.strip() or None),
+                    ref_text=(request.ref_text.strip() or None),
                 )
-                audio = MODEL.generate(
-                    text=text.strip(),
-                    voice_clone_prompt=prompt,
-                    generation_config=generation_config(steps, guidance),
-                    speed=float(speed),
-                )
+                audio = generate_omni(MODEL, request, prompt)
                 sf.write(str(output), audio[0], 24000)
                 return str(output)
 
@@ -358,25 +489,14 @@ async def engine_lab_compare(
                 )
                 prompt = trained_model.create_voice_clone_prompt(
                     ref_audio=ref_path,
-                    ref_text=(ref_text.strip() or None),
+                    ref_text=(request.ref_text.strip() or None),
                 )
-                audio = trained_model.generate(
-                    text=text.strip(),
-                    voice_clone_prompt=prompt,
-                    generation_config=generation_config(steps, guidance),
-                    speed=float(speed),
-                )
+                audio = generate_omni(trained_model, request, prompt)
                 sf.write(str(output), audio[0], 24000)
                 return str(output)
 
             if name == "F5-TTS":
-                run_f5(
-                    ref_path=ref_path,
-                    ref_text=ref_text.strip(),
-                    text=text.strip(),
-                    output_path=output,
-                    speed=float(speed),
-                )
+                run_f5(**request.f5_arguments(ref_path, output))
                 return str(output)
 
             raise RuntimeError(f"Unsupported engine: {name}")
@@ -396,6 +516,8 @@ async def engine_lab_compare(
             },
         }
 
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
     except Exception as e:
         traceback.print_exc()
         return JSONResponse(
@@ -419,7 +541,7 @@ import subprocess
 import threading
 import math
 
-PERSONAL_ROOT = Path.home() / "Documents" / "OmniVoice-Mac" / "personal-voice"
+PERSONAL_ROOT = DATA_ROOT / "personal-voice"
 PERSONAL_DATA = PERSONAL_ROOT / "dataset"
 PERSONAL_AUDIO = PERSONAL_DATA / "audio"
 PERSONAL_TRAIN = PERSONAL_DATA / "train.jsonl"

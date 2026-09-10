@@ -36,6 +36,7 @@ struct StatusPill: View {
     }
 }
 
+#if !PHASE1_TESTS
 @main
 struct OmniVoiceNativeApp: App {
     @StateObject private var model = AppModel()
@@ -51,6 +52,8 @@ struct OmniVoiceNativeApp: App {
         .defaultSize(width: 1480, height: 920)
     }
 }
+
+#endif
 
 enum AppSection: String, CaseIterable {
     case clone = "Voice Clone"
@@ -305,6 +308,29 @@ final class AppModel: ObservableObject {
     @Published var speed = 1.0
     @Published var steps = 32.0
     @Published var guidance = 2.0
+    @Published var runtimeProvenance: [String: String] = [:]
+    @Published var generationSeed = 0
+    @Published var denoiseOutput = true
+
+    // Reference Analyzer / Auto Tune
+    @Published var referenceAnalyzing = false
+    @Published var referenceAnalysisReady = false
+    @Published var referenceAnalysisStatus = "Analyze a reference to get voice-specific settings."
+    @Published var referenceDuration = 0.0
+    @Published var referencePitch = 0.0
+    @Published var referencePitchRange = 0.0
+    @Published var referenceRMS = -60.0
+    @Published var referencePeak = -60.0
+    @Published var referenceSpeechRatio = 0.0
+    @Published var referencePauseRatio = 0.0
+    @Published var referenceWPM = 0.0
+    @Published var referenceQualityScore = 0
+    @Published var referenceQualityLabel = "Not analyzed"
+    @Published var referencePaceLabel = "Unknown"
+    @Published var recommendedSpeed = 1.0
+    @Published var recommendedSteps = 32.0
+    @Published var recommendedGuidance = 2.0
+    @Published var recommendedDenoise = true
     @Published var isGenerating = false
     @Published var status = "Starting model…"
     @Published var modelReady = false
@@ -351,7 +377,15 @@ final class AppModel: ObservableObject {
 
     @Published var personalRejectionDetails: [String] = []
     @Published var preset = "Natural"
-    @Published var longFormText = ""
+    private var synchronizingProduction = false
+    @Published var longFormText = "" {
+        didSet {
+            if !synchronizingProduction && oldValue != longFormText {
+                productionChunks = []
+                longFormOutputURL = nil
+            }
+        }
+    }
     @Published var longFormProgress: Double = 0
     @Published var longFormStatus = "Ready"
     @Published var longFormOutputURL: URL?
@@ -377,6 +411,8 @@ final class AppModel: ObservableObject {
     let recorder = RecorderController()
 
     private var backend: Process?
+    private var storageOverride: URL?
+    private let session: URLSession
 
     struct Generation: Identifiable, Codable, Equatable {
         var id = UUID()
@@ -414,7 +450,10 @@ final class AppModel: ObservableObject {
         var updatedAt: Date
     }
 
-    init() {
+    init(startServices: Bool = true, storageRoot: URL? = nil, session: URLSession = .shared) {
+        self.session = session
+        storageOverride = storageRoot
+        guard startServices else { return }
         createDirectories()
         loadPersistentData()
         startBackend()
@@ -434,7 +473,8 @@ final class AppModel: ObservableObject {
     private var voicesDir: URL { documentsRoot.appendingPathComponent("voices", isDirectory: true) }
 
     private var appSupport: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        if let storageOverride { return storageOverride }
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("OmniVoice", isDirectory: true)
     }
 
@@ -514,9 +554,20 @@ final class AppModel: ObservableObject {
         var req = URLRequest(url: url)
         req.timeoutInterval = 1
 
-        URLSession.shared.dataTask(with: req) { [weak self] _, response, _ in
+        session.dataTask(with: req) { [weak self] data, response, _ in
             DispatchQueue.main.async {
                 if let http = response as? HTTPURLResponse, http.statusCode == 200 {
+                    guard let data,
+                          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                          json["ok"] as? Bool == true,
+                          json["generation_contract"] as? Int == 1,
+                          let provenance = json["provenance"] as? [String: String] else {
+                        self?.modelReady = false
+                        self?.status = "Incompatible backend"
+                        self?.errorMessage = "Close the older OmniVoice app/backend before using this build."
+                        return
+                    }
+                    self?.runtimeProvenance = provenance
                     self?.modelReady = true
                     self?.status = "Model Ready"
                     self?.checkEngineLab()
@@ -534,7 +585,7 @@ final class AppModel: ObservableObject {
 
     func checkEngineLab() {
         guard let url = URL(string: "http://127.0.0.1:8011/engine-lab/status") else { return }
-        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+        session.dataTask(with: url) { [weak self] data, _, _ in
             DispatchQueue.main.async {
                 guard let data,
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -585,11 +636,12 @@ final class AppModel: ObservableObject {
             body.append("\(value)\r\n".data(using: .utf8)!)
         }
 
-        field("text", engineLabText)
-        field("ref_text", referenceText)
-        field("speed", String(speed))
-        field("steps", String(Int(steps)))
-        field("guidance", String(guidance))
+        guard let fields = generationFields(text: engineLabText, pronunciations: clonePronunciationRules,
+                                            language: cloneLanguage) else {
+            engineLabRunning = false
+            return
+        }
+        for (name, value) in fields { field(name, value) }
         field("engine_a", engineLabEngineA)
         field("engine_b", engineLabEngineB)
 
@@ -604,7 +656,7 @@ final class AppModel: ObservableObject {
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)
         request.httpBody = body
 
-        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+        session.dataTask(with: request) { [weak self] data, response, error in
             DispatchQueue.main.async {
                 self?.engineLabRunning = false
 
@@ -622,7 +674,7 @@ final class AppModel: ObservableObject {
                     return
                 }
 
-                if let error = json["error"] as? String {
+                if let error = (json["error"] as? String ?? json["detail"] as? String) {
                     self?.engineLabStatus = "Failed"
                     self?.errorMessage = error
                     return
@@ -653,7 +705,7 @@ final class AppModel: ObservableObject {
 
     func checkPersonalModel() {
         guard let url = URL(string: "http://127.0.0.1:8011/personal/model-status") else { return }
-        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+        session.dataTask(with: url) { [weak self] data, _, _ in
             DispatchQueue.main.async {
                 guard let data,
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -678,7 +730,7 @@ final class AppModel: ObservableObject {
         request.httpMethod = "POST"
         request.timeoutInterval = 1800
 
-        URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
+        session.dataTask(with: request) { [weak self] data, _, error in
             DispatchQueue.main.async {
                 self?.personalMerging = false
                 if let error {
@@ -689,7 +741,7 @@ final class AppModel: ObservableObject {
                 guard let data,
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
                 else { return }
-                if let e = json["error"] as? String {
+                if let e = (json["error"] as? String ?? json["detail"] as? String) {
                     self?.personalMergeStatus = "Merge failed"
                     self?.errorMessage = e
                     return
@@ -715,7 +767,7 @@ final class AppModel: ObservableObject {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: ["name": name])
 
-        URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
+        session.dataTask(with: request) { [weak self] data, _, error in
             DispatchQueue.main.async {
                 self?.savingTrainedVoice = false
 
@@ -731,7 +783,7 @@ final class AppModel: ObservableObject {
                     return
                 }
 
-                if let e = json["error"] as? String {
+                if let e = (json["error"] as? String ?? json["detail"] as? String) {
                     self?.errorMessage = e
                     return
                 }
@@ -771,7 +823,7 @@ final class AppModel: ObservableObject {
             "auto_transcribe": personalAutoTranscribe
         ])
 
-        URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
+        session.dataTask(with: request) { [weak self] data, _, error in
             DispatchQueue.main.async {
                 self?.personalPreparing = false
                 if let error {
@@ -785,7 +837,7 @@ final class AppModel: ObservableObject {
                     self?.errorMessage = "Unreadable Personal Voice response."
                     return
                 }
-                if let e = json["error"] as? String {
+                if let e = (json["error"] as? String ?? json["detail"] as? String) {
                     self?.personalStatus = "Preparation failed"
                     self?.personalRejectionDetails = json["rejection_details"] as? [String] ?? []
                     self?.personalGoodClips = json["accepted"] as? Int ?? 0
@@ -812,7 +864,7 @@ final class AppModel: ObservableObject {
         request.httpMethod = "POST"
         request.timeoutInterval = 30
 
-        URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
+        session.dataTask(with: request) { [weak self] data, _, error in
             DispatchQueue.main.async {
                 if let error {
                     self?.personalTraining = false
@@ -825,7 +877,7 @@ final class AppModel: ObservableObject {
                     self?.personalTraining = false
                     return
                 }
-                if let e = json["error"] as? String {
+                if let e = (json["error"] as? String ?? json["detail"] as? String) {
                     self?.personalTraining = false
                     self?.personalStatus = "Training could not start"
                     self?.errorMessage = e
@@ -839,7 +891,7 @@ final class AppModel: ObservableObject {
 
     func pollPersonalTraining() {
         guard let url = URL(string: "http://127.0.0.1:8011/personal/training-status") else { return }
-        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+        session.dataTask(with: url) { [weak self] data, _, _ in
             DispatchQueue.main.async {
                 guard let data,
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -1078,8 +1130,25 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func generationFields(text: String, pronunciations: String = "", language: String = "Auto detect",
+                          instruct: String = "", segments: [String]? = nil,
+                          retryIndex: Int? = nil) -> [String: String]? {
+        do {
+            guard steps.isFinite, (8...64).contains(steps) else { throw GenerationRequest.RequestError.invalid }
+            return try GenerationRequest(text: text, refText: referenceText,
+                pronunciations: pronunciations, language: language, instruct: instruct,
+                speed: speed, steps: Int(steps), guidance: guidance,
+                seed: generationSeed, denoise: denoiseOutput, count: variantCount,
+                segments: segments, retryIndex: retryIndex).fields()
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
     func applyPreset(_ name: String) {
         preset = name
+        if name == "Auto Tuned" { return }
         switch name {
         case "Fast Preview": steps = 16; guidance = 2.0; speed = 1.0
         case "Maximum Quality": steps = 48; guidance = 2.2; speed = 1.0
@@ -1110,12 +1179,15 @@ final class AppModel: ObservableObject {
         productionChunks[index].text=text
         productionChunks[index].state="Edited"
         productionChunks[index].output=nil
+        synchronizingProduction = true
+        longFormText = productionChunks.map(\.text).joined(separator: " ")
+        synchronizingProduction = false
+        longFormOutputURL = nil
     }
 
     func retryChunk(_ index:Int) {
-        guard productionChunks.indices.contains(index) else{return}
-        productionChunks[index].state="Pending"
-        productionChunks[index].output=nil
+        guard productionChunks.indices.contains(index), !isGenerating else { return }
+        executeLongForm(retryIndex: index)
     }
 
     func generateVariants() {
@@ -1127,19 +1199,30 @@ final class AppModel: ObservableObject {
         req.setValue("multipart/form-data; boundary=\(boundary)",forHTTPHeaderField:"Content-Type")
         var body=Data()
         func f(_ n:String,_ v:String){body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(n)\"\r\n\r\n\(v)\r\n".data(using:.utf8)!)}
-        f("text",cloneText);f("ref_text",referenceText);f("count",String(variantCount));f("speed",String(speed));f("steps",String(Int(steps)));f("guidance",String(guidance))
+        guard let fields = generationFields(text: cloneText, pronunciations: clonePronunciationRules,
+                                            language: cloneLanguage) else { isGenerating = false; return }
+        for (name, value) in fields { f(name, value) }
         if let d=try? Data(contentsOf:ref){body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"ref_audio\"; filename=\"\(ref.lastPathComponent)\"\r\nContent-Type: application/octet-stream\r\n\r\n".data(using:.utf8)!);body.append(d);body.append("\r\n".data(using:.utf8)!)}
         body.append("--\(boundary)--\r\n".data(using:.utf8)!);req.httpBody=body
-        URLSession.shared.dataTask(with:req){[weak self] data,_,_ in DispatchQueue.main.async{
+        session.dataTask(with:req){[weak self] data,_,_ in DispatchQueue.main.async{
             self?.isGenerating=false
             guard let data,let j=try? JSONSerialization.jsonObject(with:data) as? [String:Any],let paths=j["outputs"] as? [String] else{self?.errorMessage="Variant generation failed.";return}
             self?.variantURLs=paths.map{URL(fileURLWithPath:$0)}
         }}.resume()
     }
 
-    func generateLongForm() {
-        guard modelReady, let ref = referenceURL,
-              !longFormText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    func generateLongForm() { executeLongForm(retryIndex: nil) }
+
+    private func executeLongForm(retryIndex: Int?) {
+        guard modelReady, !isGenerating, let ref = referenceURL else { return }
+        if productionChunks.isEmpty { prepareProductionChunks() }
+        let sourceSegments = productionChunks.map(\.text)
+        let sourceIDs = productionChunks.map(\.id)
+        let sourceText = sourceSegments.joined(separator: " ")
+        guard let fields = generationFields(text: sourceText, pronunciations: pronunciationRules,
+            segments: sourceSegments, retryIndex: retryIndex) else { return }
+        longFormOutputURL = nil
+        if let retryIndex { productionChunks[retryIndex].state = "Generating" }
         errorMessage = nil
         isGenerating = true
         longFormProgress = 0.15
@@ -1156,12 +1239,7 @@ final class AppModel: ObservableObject {
             body.append("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n".data(using: .utf8)!)
             body.append("\(value)\r\n".data(using: .utf8)!)
         }
-        field("text", longFormText)
-        field("ref_text", referenceText)
-        field("speed", String(speed))
-        field("steps", String(Int(steps)))
-        field("guidance", String(guidance))
-        field("pronunciations", pronunciationRules)
+        for (name, value) in fields { field(name, value) }
         if let data = try? Data(contentsOf: ref) {
             body.append("--\(boundary)\r\n".data(using: .utf8)!)
             body.append("Content-Disposition: form-data; name=\"ref_audio\"; filename=\"\(ref.lastPathComponent)\"\r\n".data(using: .utf8)!)
@@ -1172,35 +1250,57 @@ final class AppModel: ObservableObject {
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)
         request.httpBody = body
 
-        URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
+        session.dataTask(with: request) { [weak self] data, _, error in
             DispatchQueue.main.async {
                 self?.isGenerating = false
+                guard let self else { return }
+                guard self.productionChunks.map(\.text) == sourceSegments,
+                      self.productionChunks.map(\.id) == sourceIDs else {
+                    self.longFormStatus = "Script changed — generate the edited source again"
+                    return
+                }
+                if let retryIndex { self.productionChunks[retryIndex].state = "Failed" }
                 if let error {
-                    self?.longFormStatus = "Failed"
-                    self?.errorMessage = error.localizedDescription
+                    self.longFormStatus = "Failed"
+                    self.errorMessage = error.localizedDescription
                     return
                 }
                 guard let data,
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String:Any] else {
-                    self?.errorMessage = "Unreadable response from OmniVoice."
+                    self.errorMessage = "Unreadable response from OmniVoice."
                     return
                 }
-                if let message = json["error"] as? String {
-                    self?.longFormStatus = "Failed"; self?.errorMessage = message; return
+                if let message = (json["error"] as? String ?? json["detail"] as? String) {
+                    self.longFormStatus = "Failed"; self.errorMessage = message; return
                 }
                 guard let path = json["output"] as? String else { return }
                 let url = URL(fileURLWithPath: path)
-                self?.longFormOutputURL = url
-                self?.outputURL = url
-                self?.longFormProgress = 1
-                self?.longFormStatus = "Complete • \(json["chunks"] as? Int ?? 1) sections"
-                if let text = self?.longFormText {
-                    let item = Generation(text: text, path: path, createdAt: Date(), mode: "Long Form")
-                    self?.generations.insert(item, at: 0)
-                    self?.registerGenerationWithActiveProject(item.id)
-                    self?.saveHistory()
+                if let retryIndex {
+                    self.productionChunks[retryIndex].output = url
+                    self.productionChunks[retryIndex].state = "Complete"
+                    self.longFormStatus = "Section regenerated — generate master to include this edit"
+                    self.outputURL = url
+                    if self.autoPlay { self.outputPlayer.toggle(url) }
+                    return
                 }
-                if self?.autoPlay == true { self?.outputPlayer.toggle(url) }
+                if let paths = json["segment_outputs"] as? [String], paths.count == sourceSegments.count {
+                    for i in paths.indices {
+                        self.productionChunks[i].output = URL(fileURLWithPath: paths[i])
+                        self.productionChunks[i].state = "Complete"
+                    }
+                }
+                self.longFormOutputURL = url
+                self.outputURL = url
+                self.longFormProgress = 1
+                self.longFormStatus = "Complete • \(json["chunks"] as? Int ?? 1) sections"
+                do {
+                    let text = sourceText
+                    let item = Generation(text: text, path: path, createdAt: Date(), mode: "Long Form")
+                    self.generations.insert(item, at: 0)
+                    self.registerGenerationWithActiveProject(item.id)
+                    self.saveHistory()
+                }
+                if self.autoPlay == true { self.outputPlayer.toggle(url) }
             }
         }.resume()
     }
@@ -1293,6 +1393,103 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func analyzeReference() {
+        guard let ref = referenceURL else {
+            errorMessage = "Choose a reference voice first."
+            return
+        }
+
+        referenceAnalyzing = true
+        referenceAnalysisReady = false
+        referenceAnalysisStatus = "Analyzing voice…"
+
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:8011/analyze-reference")!)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 120
+
+        let boundary = UUID().uuidString
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+
+        var body = Data()
+
+        func field(_ name: String, _ value: String) {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n".data(using: .utf8)!)
+            body.append("\(value)\r\n".data(using: .utf8)!)
+        }
+
+        field("ref_text", referenceText)
+
+        if let audio = try? Data(contentsOf: ref) {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"ref_audio\"; filename=\"\(ref.lastPathComponent)\"\r\n".data(using: .utf8)!)
+            body.append("Content-Type: application/octet-stream\r\n\r\n".data(using: .utf8)!)
+            body.append(audio)
+            body.append("\r\n".data(using: .utf8)!)
+        }
+
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        request.httpBody = body
+
+        session.dataTask(with: request) { [weak self] data, response, error in
+            DispatchQueue.main.async {
+                self?.referenceAnalyzing = false
+
+                if let error {
+                    self?.referenceAnalysisStatus = "Analysis failed"
+                    self?.errorMessage = error.localizedDescription
+                    return
+                }
+
+                guard let data,
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                else {
+                    self?.referenceAnalysisStatus = "Analysis failed"
+                    self?.errorMessage = "Could not read analyzer response."
+                    return
+                }
+
+                if let message = (json["error"] as? String ?? json["detail"] as? String) {
+                    self?.referenceAnalysisStatus = "Analysis failed"
+                    self?.errorMessage = message
+                    return
+                }
+
+                self?.referenceDuration = json["duration"] as? Double ?? 0
+                self?.referencePitch = json["pitch_hz"] as? Double ?? 0
+                self?.referencePitchRange = json["pitch_range_hz"] as? Double ?? 0
+                self?.referenceRMS = json["rms_db"] as? Double ?? -60
+                self?.referencePeak = json["peak_db"] as? Double ?? -60
+                self?.referenceSpeechRatio = json["speech_ratio"] as? Double ?? 0
+                self?.referencePauseRatio = json["pause_ratio"] as? Double ?? 0
+                self?.referenceWPM = json["wpm"] as? Double ?? 0
+                self?.referenceQualityScore = json["quality_score"] as? Int ?? 0
+                self?.referenceQualityLabel = json["quality_label"] as? String ?? "Unknown"
+                self?.referencePaceLabel = json["pace_label"] as? String ?? "Unknown"
+
+                if let rec = json["recommended"] as? [String: Any] {
+                    self?.recommendedSpeed = rec["speed"] as? Double ?? 1.0
+                    self?.recommendedSteps = rec["steps"] as? Double ?? 32
+                    self?.recommendedGuidance = rec["guidance"] as? Double ?? 2.0
+                    self?.recommendedDenoise = rec["denoise"] as? Bool ?? true
+                }
+
+                self?.referenceAnalysisReady = true
+                self?.referenceAnalysisStatus = "Analysis complete"
+            }
+        }.resume()
+    }
+
+    func applyReferenceRecommendations() {
+        guard referenceAnalysisReady else { return }
+        speed = recommendedSpeed
+        steps = recommendedSteps
+        guidance = recommendedGuidance
+        denoiseOutput = recommendedDenoise
+        preset = "Auto Tuned"
+        referenceAnalysisStatus = "Recommended settings applied"
+    }
+
     func generateClone() {
         guard let ref = referenceURL else { return }
         multipartGenerate(
@@ -1347,11 +1544,11 @@ final class AppModel: ObservableObject {
             body.append("\(value)\r\n".data(using: .utf8)!)
         }
 
-        appendField("text", text)
-        appendField("speed", String(speed))
-        appendField("steps", String(Int(steps)))
-        appendField("guidance", String(guidance))
-        for (k, v) in extraFields { appendField(k, v) }
+        guard let fields = generationFields(text: text,
+            pronunciations: extraFields["pronunciations"] ?? "",
+            language: extraFields["language"] ?? "Auto detect",
+            instruct: extraFields["instruct"] ?? "") else { isGenerating = false; return }
+        for (name, value) in fields { appendField(name, value) }
 
         if let audioURL, let data = try? Data(contentsOf: audioURL) {
             body.append("--\(boundary)\r\n".data(using: .utf8)!)
@@ -1364,7 +1561,7 @@ final class AppModel: ObservableObject {
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)
         request.httpBody = body
 
-        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+        session.dataTask(with: request) { [weak self] data, response, error in
             DispatchQueue.main.async {
                 self?.isGenerating = false
 
@@ -1382,7 +1579,7 @@ final class AppModel: ObservableObject {
 
                 if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
                     if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                       let message = json["error"] as? String {
+                       let message = (json["error"] as? String ?? json["detail"] as? String) {
                         self?.errorMessage = message
                     } else {
                         self?.errorMessage = "OmniVoice returned HTTP \(http.statusCode)."
@@ -1633,10 +1830,11 @@ struct CloneWorkspace: View {
                 .scrollIndicators(.hidden)
 
                 VStack(spacing: 14) {
+                    ReferenceAnalysisCard()
                     GenerationSettingsCard(mode: .clone)
                     RecentCard()
                 }
-                .frame(width: 300)
+                .frame(width: 320)
             }
             .padding(18)
         }
@@ -2470,8 +2668,10 @@ struct LongFormWorkspace: View {
                         VStack(alignment: .leading, spacing: 14) {
                             Label("Long Form Settings", systemImage: "text.document").font(.headline)
                             Picker("Preset", selection: $model.preset) {
-                                ForEach(["Fast Preview","Natural","Narration","Maximum Quality"], id: \.self) { Text($0).tag($0) }
-                            }.onChange(of: model.preset) { _, v in model.applyPreset(v) }
+                                ForEach(["Fast Preview","Natural","Narration","Maximum Quality","Auto Tuned"], id: \.self) { Text($0).tag($0) }
+                            }.onChange(of: model.preset) { _, v in
+                    if v != "Auto Tuned" { model.applyPreset(v) }
+                }
                             SliderRow(title: "Speed", value: $model.speed, range: 0.5...1.5, display: String(format: "%.2f", model.speed))
                             SliderRow(title: "Steps", value: $model.steps, range: 8...64, display: "\(Int(model.steps))")
                             Divider().opacity(0.3)
@@ -2738,7 +2938,7 @@ struct EngineLabWorkspace: View {
                                 StepHeader(
                                     number: 2,
                                     title: "Test Script",
-                                    subtitle: "Both engines receive exactly the same words and generation settings."
+                                    subtitle: "Speed is shared. OmniVoice controls apply only to OmniVoice; F5 comparisons require plain text and no pronunciation overrides."
                                 )
 
                                 TextEditor(text: $model.engineLabText)
@@ -3477,6 +3677,13 @@ struct SettingsWorkspace: View {
 
                     Card {
                         VStack(alignment: .leading, spacing: 14) {
+                            Text("Native app: \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development")")
+                                .font(.caption)
+                            ForEach(model.runtimeProvenance.keys.sorted(), id: \.self) { key in
+                                SettingsPathRow(label: key.replacingOccurrences(of: "_", with: " "),
+                                                value: model.runtimeProvenance[key] ?? "unknown")
+                            }
+
                             Label("Inference", systemImage: "cpu")
                                 .font(.headline)
 
@@ -3538,6 +3745,114 @@ struct SettingsStatusRow: View {
 
 enum GenerationMode { case clone, design }
 
+
+struct ReferenceAnalysisCard: View {
+    @EnvironmentObject var model: AppModel
+
+    private func metric(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.caption.weight(.semibold))
+                .monospacedDigit()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 13) {
+                HStack {
+                    Label("Reference Analyzer", systemImage: "waveform.badge.magnifyingglass")
+                        .font(.headline)
+                    Spacer()
+                    if model.referenceAnalysisReady {
+                        Text("\(model.referenceQualityScore)/100")
+                            .font(.caption.bold())
+                            .foregroundStyle(model.referenceQualityScore >= 75 ? .green : .orange)
+                    }
+                }
+
+                Text("Measure the reference and tune OmniVoice to the speaker instead of guessing the controls.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if model.referenceAnalysisReady {
+                    VStack(spacing: 9) {
+                        HStack(spacing: 10) {
+                            metric("Quality", model.referenceQualityLabel)
+                            metric("Pace", model.referencePaceLabel)
+                        }
+                        HStack(spacing: 10) {
+                            metric("Pitch", model.referencePitch > 0 ? "\(Int(model.referencePitch)) Hz" : "—")
+                            metric("Pitch Range", model.referencePitchRange > 0 ? "\(Int(model.referencePitchRange)) Hz" : "—")
+                        }
+                        HStack(spacing: 10) {
+                            metric("Speech", "\(Int(model.referenceSpeechRatio * 100))%")
+                            metric("Pauses", "\(Int(model.referencePauseRatio * 100))%")
+                        }
+                        if model.referenceWPM > 0 {
+                            HStack {
+                                metric("Measured pace", "\(Int(model.referenceWPM)) wpm")
+                                metric("Level", String(format: "%.1f dB", model.referenceRMS))
+                            }
+                        }
+                    }
+
+                    Divider().opacity(0.22)
+
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text("Recommended")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+
+                        HStack {
+                            Text(String(format: "%.2f×", model.recommendedSpeed))
+                            Spacer()
+                            Text("\(Int(model.recommendedSteps)) steps")
+                            Spacer()
+                            Text(String(format: "%.1f guidance", model.recommendedGuidance))
+                        }
+                        .font(.caption.monospacedDigit())
+
+                        Button {
+                            model.applyReferenceRecommendations()
+                        } label: {
+                            Label("Apply Recommended Settings", systemImage: "wand.and.stars")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                } else {
+                    HStack(spacing: 9) {
+                        Image(systemName: "info.circle")
+                            .foregroundStyle(.secondary)
+                        Text(model.referenceAnalysisStatus)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Button {
+                    model.analyzeReference()
+                } label: {
+                    HStack {
+                        if model.referenceAnalyzing {
+                            ProgressView().controlSize(.small)
+                        }
+                        Image(systemName: "waveform.path.ecg")
+                        Text(model.referenceAnalyzing ? "Analyzing…" : (model.referenceAnalysisReady ? "Analyze Again" : "Analyze Reference"))
+                        Spacer()
+                    }
+                }
+                .disabled(model.referenceURL == nil || model.referenceAnalyzing)
+            }
+        }
+    }
+}
+
 struct GenerationSettingsCard: View {
     @EnvironmentObject var model: AppModel
     let mode: GenerationMode
@@ -3547,13 +3862,45 @@ struct GenerationSettingsCard: View {
             VStack(alignment: .leading, spacing: 14) {
                 Label("Generation Settings", systemImage: "slider.horizontal.3").font(.headline)
                 Picker("Preset", selection: $model.preset) {
-                    ForEach(["Fast Preview","Natural","Narration","Maximum Quality"], id: \.self) { Text($0).tag($0) }
+                    ForEach(["Fast Preview","Natural","Narration","Maximum Quality","Auto Tuned"], id: \.self) { Text($0).tag($0) }
                 }
                 .onChange(of: model.preset) { _, v in model.applyPreset(v) }
 
                 SliderRow(title: "Speed", value: $model.speed, range: 0.5...1.5, display: String(format: "%.2f", model.speed))
                 SliderRow(title: "Steps", value: $model.steps, range: 8...64, display: "\(Int(model.steps))")
                 SliderRow(title: "Guidance", value: $model.guidance, range: 0...4, display: String(format: "%.1f", model.guidance))
+
+                DisclosureGroup("Advanced") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Toggle("Denoise output", isOn: $model.denoiseOutput)
+
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Seed")
+                                    .font(.caption.weight(.semibold))
+                                Text(model.generationSeed == 0 ? "Random every generation" : "Repeatable generation")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            Spacer()
+
+                            TextField(
+                                "0",
+                                value: $model.generationSeed,
+                                formatter: NumberFormatter()
+                            )
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 84)
+                        }
+
+                        Text("Seed 0 is random. Use the same non-zero seed to make A/B parameter tests more repeatable.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.top, 8)
+                }
+                .font(.caption.weight(.semibold))
 
                 Button {
                     if mode == .clone { model.generateClone() }
