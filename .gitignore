@@ -1,0 +1,47 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+f5-venv/
+training-venv/
+
+# Build products
+.build/
+DerivedData/
+dist/
+build/
+*.app
+*.dmg
+
+# Models / checkpoints
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+checkpoints/
+models/
+exp/
+
+# Generated audio
+outputs/
+*.wav
+*.mp3
+*.m4a
+
+# Personal voice/training data
+personal-voice/
+dataset/
+tokens/
+
+# Logs / runtime
+*.log
+*.pid
+
+# Secrets
+.env
+.env.*
+!.env.example
