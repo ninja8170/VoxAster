@@ -1,6 +1,6 @@
 # Changelog
 
-## 3.7.0 — first public source release (candidate)
+## 3.7.0 — first public source release
 
 - Product renamed to VoxAster — Local AI Voice Studio for macOS; existing data and runtime identities are preserved.
 - Publication checks cover historical commit/tag identities; documentation distinguishes external model terms and local processing limits.
