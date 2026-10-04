@@ -218,6 +218,9 @@ extension AppModel {
 
 final class DraftQuitDelegate: NSObject, NSApplicationDelegate {
     weak var model: AppModel?
+    func applicationWillTerminate(_ notification: Notification) {
+        model?.stopBackend()
+    }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let model else { return .terminateNow }
         if model.recorder.isRecording { model.recorder.stop() }

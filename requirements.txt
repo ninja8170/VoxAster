@@ -1,0 +1,6 @@
+-c constraints-macos-py312.txt
+omnivoice @ git+https://github.com/k2-fsa/OmniVoice.git@08be0b4ccbac3e13e374e86fbfead4b4cac343e2
+fastapi
+uvicorn
+python-multipart
+httpx

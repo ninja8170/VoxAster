@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import Mock, patch
 import numpy as np
 
-ROOT = tempfile.TemporaryDirectory(prefix='omnivoice-phase1-tests-')
+ROOT = tempfile.TemporaryDirectory(prefix='voxaster-phase1-tests-')
 os.environ['OMNIVOICE_DATA_ROOT'] = ROOT.name
 from fastapi.testclient import TestClient
 import backend
@@ -20,7 +20,7 @@ class GenerationTests(unittest.TestCase):
         self.model.generate.return_value = [np.zeros(24, dtype=np.float32)]
         self.model.create_voice_clone_prompt.return_value = 'prompt'
         backend.MODEL = self.model
-        self.client = TestClient(backend.app)
+        self.client = TestClient(backend.app, base_url="http://127.0.0.1:8011")
         self.seed_patch = patch.object(backend, 'apply_seed')
         self.seed = self.seed_patch.start()
         self.addCleanup(self.seed_patch.stop)
@@ -160,13 +160,20 @@ class GenerationTests(unittest.TestCase):
         self.assertEqual(provenance['model_revision'],MANIFEST['model_revision'])
         self.assertEqual(provenance['tokenizer_revision'],MANIFEST['model_revision'])
         self.assertEqual(len(provenance['tokenizer_sha256']),64)
+        self.assertEqual(provenance['audio_tokenizer_source'], MANIFEST['audio_tokenizer']['repo_id'])
+        self.assertEqual(provenance['audio_tokenizer_revision'], MANIFEST['audio_tokenizer']['revision'])
+        self.assertEqual(provenance['audio_tokenizer_weights_sha256'], MANIFEST['audio_tokenizer']['sha256']['model.safetensors'])
 
     def test_startup_loads_only_verified_local_snapshot(self):
-        with patch.object(backend.OmniVoice, 'from_pretrained', return_value=self.model) as load:
+        def verify_view(path, **kwargs):
+            loaded = Path(path)
+            self.assertEqual((loaded / 'config.json').resolve(), (resolve_base_model() / 'config.json').resolve())
+            self.assertEqual((loaded / 'audio_tokenizer').resolve().name, MANIFEST['audio_tokenizer']['revision'])
+            self.assertTrue(kwargs['local_files_only'])
+            return self.model
+        with patch.object(backend.OmniVoice, 'from_pretrained', side_effect=verify_view) as load:
             backend.startup()
-        loaded = Path(load.call_args.args[0])
-        self.assertEqual(loaded.name, MANIFEST['model_revision'])
-        self.assertTrue(loaded.is_dir())
+        self.assertFalse(Path(load.call_args.args[0]).exists())
         response = self.client.get('/health').json()
         self.assertEqual(response['generation_contract'], 3)
         self.assertEqual(response['provenance']['package_version'], '0.2.1')

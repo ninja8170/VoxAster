@@ -78,6 +78,9 @@ struct Phase1Tests {
         check(PythonBackendLaunch.arguments(server: "/bundle/backend.py") == ["-B", "/bundle/backend.py"], "production backend launches Python with -B")
         let pythonEnvironment = PythonBackendLaunch.environment(from: ["EXISTING": "kept"])
         check(pythonEnvironment["PYTHONDONTWRITEBYTECODE"] == "1" && pythonEnvironment["PYTHONUNBUFFERED"] == "1" && pythonEnvironment["EXISTING"] == "kept", "production backend disables bytecode writes without dropping environment")
+        check(!AppSection.allCases.map(\.rawValue).contains("Voice Training"), "no training workspace in public release")
+        check(AppSection.allCases.map(\.rawValue) == ["Voice Clone", "Voice Design", "Library", "History", "Long Form", "Performance", "Projects", "Engine Lab", "Settings"], "inference and production workspaces retained")
+        check(DependencyCredits.boson.contains("Built with Higgs Materials licensed from Boson AI USA, Inc.") && DependencyCredits.meta.contains("Built with Meta Llama 3"), "required model credits available to Settings")
         model.modelReady = true
         model.autoPlay = false
         model.referenceURL = reference

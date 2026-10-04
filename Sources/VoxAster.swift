@@ -38,12 +38,12 @@ struct StatusPill: View {
 
 #if !PHASE1_TESTS
 @main
-struct OmniVoiceNativeApp: App {
+struct VoxAsterApp: App {
     @NSApplicationDelegateAdaptor(DraftQuitDelegate.self) private var appDelegate
     @StateObject private var model = AppModel()
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup("VoxAster") {
             ContentView()
                 .environmentObject(model)
                 .onAppear { appDelegate.model = model }
@@ -66,7 +66,6 @@ enum AppSection: String, CaseIterable {
     case performance = "Performance"
     case projects = "Projects"
     case engineLab = "Engine Lab"
-    case personalVoice = "Voice Training"
     case settings = "Settings"
 
     var icon: String {
@@ -79,7 +78,6 @@ enum AppSection: String, CaseIterable {
         case .performance: return "waveform.path"
         case .projects: return "square.grid.2x2"
         case .engineLab: return "testtube.2"
-        case .personalVoice: return "person.wave.2"
         case .settings: return "gearshape"
         }
     }
@@ -221,7 +219,7 @@ final class RecorderController: NSObject, ObservableObject, AVAudioRecorderDeleg
         }
 
         let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("omnivoice-recording-\(UUID().uuidString).wav")
+            .appendingPathComponent("voxaster-recording-\(UUID().uuidString).wav")
 
         let settings: [String: Any] = [
             AVFormatIDKey: Int(kAudioFormatLinearPCM),
@@ -297,6 +295,7 @@ enum PythonBackendLaunch {
         var environment = base
         environment["PYTHONUNBUFFERED"] = "1"
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        environment["HF_HUB_DISABLE_TELEMETRY"] = "1"
         return environment
     }
 }
@@ -382,31 +381,8 @@ final class AppModel: ObservableObject {
     @Published var engineLabEngineB = "F5-TTS" { didSet { draftChanged() } }
     @Published var f5Available = false
 
-    // Personal Voice Lab
-    @Published var personalDatasetFolder: URL?
-    @Published var personalLanguage = "en"
-    @Published var personalAutoTranscribe = false
-    @Published var personalPreparing = false
-    @Published var personalTraining = false
-    @Published var personalStatus = "No dataset prepared"
-    @Published var personalGoodClips = 0
-    @Published var personalRejectedClips = 0
-    @Published var personalMinutes = 0.0
-    @Published var personalAdapterPath = ""
-    @Published var personalTrainingLog = ""
-    @Published var personalTrainingPhase = "Idle"
-    @Published var personalTrainingStep = 0
-    @Published var personalTrainingTotal = 1000
-    @Published var personalModelReady = false
-    @Published var personalModelPath = ""
-    @Published var personalMerging = false
-    @Published var personalMergeStatus = ""
-    @Published var trainedVoiceName = ""
-    @Published var savingTrainedVoice = false
-    @Published var savedTrainedVoiceName = ""
     @Published var trainedEngines: [String] = []
 
-    @Published var personalRejectionDetails: [String] = []
     @Published var preset = "Natural" { didSet { draftChanged() } }
     private var synchronizingProduction = false
     @Published var longFormText = "" {
@@ -544,6 +520,14 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func stopBackend() {
+        guard let process = backend, process.isRunning else { return }
+        process.terminate()
+        process.waitUntilExit()
+        backend = nil
+        modelReady = false
+    }
+
     func startBackend() {
         let fm = FileManager.default
         let home = fm.homeDirectoryForCurrentUser.path
@@ -556,7 +540,8 @@ final class AppModel: ObservableObject {
         let server = "\(resources)/backend.py"
 
         guard fm.fileExists(atPath: python), fm.fileExists(atPath: server) else {
-            status = "Backend files not found"
+            status = "Runtime setup required"
+            errorMessage = "Run setup-runtime.command from the source checkout, then reopen VoxAster. See README.md for requirements."
             return
         }
 
@@ -598,6 +583,15 @@ final class AppModel: ObservableObject {
         do {
             try p.run()
             backend = p
+            p.terminationHandler = { [weak self] process in
+                DispatchQueue.main.async {
+                    self?.modelReady = false
+                    self?.status = "Backend stopped"
+                    if process.terminationStatus != 0 {
+                        self?.errorMessage = "The backend exited. Check ~/Library/Logs/OmniVoice/native-backend.log. Verify runtime setup and that port 8011 is free, then reopen the app."
+                    }
+                }
+            }
         } catch {
             status = "Could not start model backend"
             errorMessage = error.localizedDescription
@@ -619,17 +613,16 @@ final class AppModel: ObservableObject {
                           let provenance = json["provenance"] as? [String: String] else {
                         self?.modelReady = false
                         self?.status = "Incompatible backend"
-                        self?.errorMessage = "Close the older OmniVoice app/backend before using this build."
+                        self?.errorMessage = "Close the older app/backend before using this build."
                         return
                     }
                     self?.runtimeProvenance = provenance
                     self?.modelReady = true
                     self?.status = "Model Ready"
                     self?.checkEngineLab()
-                    self?.pollPersonalTraining()
-                    self?.checkPersonalModel()
                 } else {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        guard self?.backend?.isRunning == true else { return }
                         self?.pollHealth()
                     }
                 }
@@ -646,11 +639,10 @@ final class AppModel: ObservableObject {
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
                 else { return }
                 self?.f5Available = (json["f5_available"] as? Bool) ?? false
-                self?.personalModelReady = (json["personal_available"] as? Bool) ?? self?.personalModelReady ?? false
-                self?.personalModelPath = json["personal_path"] as? String ?? self?.personalModelPath ?? ""
 
                 if let engines = json["engines"] as? [String], !engines.isEmpty {
                     self?.engineLabAvailableEngines = engines
+                    self?.trainedEngines = engines.filter { $0 != "OmniVoice Zero-Shot" && $0 != "F5-TTS" }
 
                     if let currentA = self?.engineLabEngineA, !engines.contains(currentA) {
                         self?.engineLabEngineA = engines.first ?? "OmniVoice Zero-Shot"
@@ -759,231 +751,6 @@ final class AppModel: ObservableObject {
 
 
 
-    func checkPersonalModel() {
-        guard let url = URL(string: "http://127.0.0.1:8011/personal/model-status") else { return }
-        session.dataTask(with: url) { [weak self] data, _, _ in
-            DispatchQueue.main.async {
-                guard let data,
-                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-                else { return }
-                self?.personalModelReady = json["ready"] as? Bool ?? false
-                self?.personalModelPath = json["path"] as? String ?? ""
-                if let saved = json["saved_engines"] as? [[String: Any]] {
-                    let names = saved.compactMap { $0["name"] as? String }
-                    self?.trainedEngines = names
-                    if let last = names.last {
-                        self?.savedTrainedVoiceName = last
-                    }
-                }
-            }
-        }.resume()
-    }
-
-    func preparePersonalModel() {
-        personalMerging = true
-        personalMergeStatus = "Preparing trained voice model…"
-        var request = URLRequest(url: URL(string: "http://127.0.0.1:8011/personal/merge")!)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 1800
-
-        session.dataTask(with: request) { [weak self] data, _, error in
-            DispatchQueue.main.async {
-                self?.personalMerging = false
-                if let error {
-                    self?.personalMergeStatus = "Merge failed"
-                    self?.errorMessage = error.localizedDescription
-                    return
-                }
-                guard let data,
-                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-                else { return }
-                if let e = (json["error"] as? String ?? json["detail"] as? String) {
-                    self?.personalMergeStatus = "Merge failed"
-                    self?.errorMessage = e
-                    return
-                }
-                self?.personalModelReady = true
-                self?.personalModelPath = json["merged_model"] as? String ?? ""
-                self?.personalMergeStatus = "Personal Voice ready"
-            }
-        }.resume()
-    }
-
-    func saveTrainedVoice() {
-        let name = trainedVoiceName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else {
-            errorMessage = "Enter a name for this trained voice."
-            return
-        }
-
-        savingTrainedVoice = true
-        var request = URLRequest(url: URL(string: "http://127.0.0.1:8011/personal/save-engine")!)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 1800
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: ["name": name])
-
-        session.dataTask(with: request) { [weak self] data, _, error in
-            DispatchQueue.main.async {
-                self?.savingTrainedVoice = false
-
-                if let error {
-                    self?.errorMessage = error.localizedDescription
-                    return
-                }
-
-                guard let data,
-                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-                else {
-                    self?.errorMessage = "Could not read the saved-engine response."
-                    return
-                }
-
-                if let e = (json["error"] as? String ?? json["detail"] as? String) {
-                    self?.errorMessage = e
-                    return
-                }
-
-                let savedName = json["name"] as? String ?? name
-                self?.savedTrainedVoiceName = savedName
-                self?.personalModelReady = true
-                self?.personalModelPath = json["path"] as? String ?? ""
-                self?.personalMergeStatus = "Saved as \(savedName)"
-                self?.checkEngineLab()
-            }
-        }.resume()
-    }
-
-    func choosePersonalDatasetFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK {
-            personalDatasetFolder = panel.url
-        }
-    }
-
-    func preparePersonalDataset() {
-        guard let folder = personalDatasetFolder else { return }
-        personalPreparing = true
-        personalStatus = "Preparing dataset…"
-
-        var request = URLRequest(url: URL(string: "http://127.0.0.1:8011/personal/prepare")!)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 3600
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: [
-            "folder": folder.path,
-            "language_id": personalLanguage,
-            "auto_transcribe": personalAutoTranscribe
-        ])
-
-        session.dataTask(with: request) { [weak self] data, _, error in
-            DispatchQueue.main.async {
-                self?.personalPreparing = false
-                if let error {
-                    self?.personalStatus = "Preparation failed"
-                    self?.errorMessage = error.localizedDescription
-                    return
-                }
-                guard let data,
-                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-                else {
-                    self?.errorMessage = "Unreadable Personal Voice response."
-                    return
-                }
-                if let e = (json["error"] as? String ?? json["detail"] as? String) {
-                    self?.personalStatus = "Preparation failed"
-                    self?.personalRejectionDetails = json["rejection_details"] as? [String] ?? []
-                    self?.personalGoodClips = json["accepted"] as? Int ?? 0
-                    self?.personalRejectedClips = json["rejected"] as? Int ?? 0
-                    self?.personalMinutes = json["minutes"] as? Double ?? 0
-                    self?.errorMessage = e
-                    return
-                }
-                self?.personalGoodClips = json["accepted"] as? Int ?? 0
-                self?.personalRejectedClips = json["rejected"] as? Int ?? 0
-                self?.personalMinutes = json["minutes"] as? Double ?? 0
-                self?.personalRejectionDetails = json["rejection_details"] as? [String] ?? []
-                self?.personalStatus = "Dataset ready"
-            }
-        }.resume()
-    }
-
-    func startPersonalTraining() {
-        personalTraining = true
-        personalStatus = "Starting training…"
-        personalTrainingPhase = "Launching"
-
-        var request = URLRequest(url: URL(string: "http://127.0.0.1:8011/personal/train")!)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 30
-
-        session.dataTask(with: request) { [weak self] data, _, error in
-            DispatchQueue.main.async {
-                if let error {
-                    self?.personalTraining = false
-                    self?.errorMessage = error.localizedDescription
-                    return
-                }
-                guard let data,
-                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-                else {
-                    self?.personalTraining = false
-                    return
-                }
-                if let e = (json["error"] as? String ?? json["detail"] as? String) {
-                    self?.personalTraining = false
-                    self?.personalStatus = "Training could not start"
-                    self?.errorMessage = e
-                    return
-                }
-                self?.personalStatus = "Training running in background"
-                self?.pollPersonalTraining()
-            }
-        }.resume()
-    }
-
-    func pollPersonalTraining() {
-        guard let url = URL(string: "http://127.0.0.1:8011/personal/training-status") else { return }
-        session.dataTask(with: url) { [weak self] data, _, _ in
-            DispatchQueue.main.async {
-                guard let data,
-                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-                else { return }
-
-                self?.personalTraining = json["running"] as? Bool ?? false
-                self?.personalTrainingLog = json["tail"] as? String ?? ""
-                self?.personalAdapterPath = json["adapter_path"] as? String ?? ""
-                self?.personalTrainingPhase = json["phase"] as? String ?? "Training"
-                self?.personalTrainingStep = json["step"] as? Int ?? 0
-                self?.personalTrainingTotal = json["total_steps"] as? Int ?? 1000
-                if let accepted = json["accepted"] as? Int, accepted > 0 {
-                    self?.personalGoodClips = accepted
-                    self?.personalRejectedClips = json["rejected"] as? Int ?? 0
-                    self?.personalMinutes = json["minutes"] as? Double ?? self?.personalMinutes ?? 0
-                }
-
-                if self?.personalTraining == true {
-                    self?.personalStatus = "Training in progress"
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                        self?.pollPersonalTraining()
-                    }
-                } else {
-                    let code = json["exit_code"] as? Int
-                    if code == 0 {
-                        self?.personalStatus = "Training complete"
-                        self?.personalTrainingPhase = "Complete"
-                    } else if code != nil {
-                        self?.personalStatus = "Training failed"
-                        self?.personalTrainingPhase = "Failed"
-                    }
-                }
-            }
-        }.resume()
-    }
-
     func chooseReference() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.audio, .wav, .mp3, .mpeg4Audio]
@@ -998,16 +765,9 @@ final class AppModel: ObservableObject {
     func acceptDroppedAudio(_ providers: [NSItemProvider]) -> Bool {
         guard let provider = providers.first else { return false }
 
-        if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { [weak self] item, _ in
-                var url: URL?
-                if let data = item as? Data {
-                    url = URL(dataRepresentation: data, relativeTo: nil)
-                } else if let u = item as? URL {
-                    url = u
-                }
-
-                guard let resolved = url else { return }
+        if provider.canLoadObject(ofClass: NSURL.self) {
+            _ = provider.loadObject(ofClass: NSURL.self) { [weak self] item, _ in
+                guard let resolved = item as? URL, resolved.isFileURL else { return }
                 DispatchQueue.main.async {
                     self?.selectReference(resolved)
                 }
@@ -1023,7 +783,7 @@ final class AppModel: ObservableObject {
             if let url {
                 self.selectRecordedReference(url)
             } else if self.recorder.permissionDenied {
-                self.errorMessage = "Microphone access is disabled. Enable OmniVoice in System Settings → Privacy & Security → Microphone."
+                self.errorMessage = "Microphone access is disabled. Enable VoxAster in System Settings → Privacy & Security → Microphone."
             } else {
                 self.errorMessage = "The recording could not be saved. Please try again."
             }
@@ -1327,7 +1087,7 @@ final class AppModel: ObservableObject {
                 }
                 guard let data,
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String:Any] else {
-                    self.errorMessage = "Unreadable response from OmniVoice."
+                    self.errorMessage = "Unreadable response from VoxAster."
                     return
                 }
                 if let message = (json["error"] as? String ?? json["detail"] as? String) {
@@ -1652,7 +1412,7 @@ final class AppModel: ObservableObject {
 
                 guard let data else {
                     self?.status = "Generation failed"
-                    self?.errorMessage = "No response from OmniVoice."
+                    self?.errorMessage = "No response from VoxAster."
                     return
                 }
 
@@ -1661,7 +1421,7 @@ final class AppModel: ObservableObject {
                        let message = (json["error"] as? String ?? json["detail"] as? String) {
                         self?.errorMessage = message
                     } else {
-                        self?.errorMessage = "OmniVoice returned HTTP \(http.statusCode)."
+                        self?.errorMessage = "VoxAster returned HTTP \(http.statusCode)."
                     }
                     self?.status = "Generation failed"
                     return
@@ -1672,7 +1432,7 @@ final class AppModel: ObservableObject {
                     let path = json["output"] as? String
                 else {
                     self?.status = "Generation failed"
-                    self?.errorMessage = "OmniVoice returned an unreadable response."
+                    self?.errorMessage = "VoxAster returned an unreadable response."
                     return
                 }
 
@@ -1776,7 +1536,6 @@ struct ContentView: View {
                 case .performance: PerformanceWorkspace()
                 case .projects: ProjectsWorkspace()
                 case .engineLab: EngineLabWorkspace()
-                case .personalVoice: PersonalVoiceWorkspace()
                 case .settings: SettingsWorkspace()
                 }
             }
@@ -1793,7 +1552,7 @@ struct ContentView: View {
             )
         )
         .safeAreaInset(edge: .bottom) { Text(model.draftStatus).font(.caption2).padding(4).frame(maxWidth: .infinity).background(OVTheme.bgBottom) }
-        .alert("OmniVoice", isPresented: Binding(
+        .alert("VoxAster", isPresented: Binding(
             get: { model.errorMessage != nil },
             set: { if !$0 { model.errorMessage = nil } }
         )) {
@@ -1819,7 +1578,7 @@ struct Sidebar: View {
                     Image(systemName: "waveform.path").font(.system(size: 21, weight: .semibold))
                 }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("OmniVoice").font(.system(size: 21, weight: .bold, design: .rounded))
+                    Text("VoxAster").font(.system(size: 21, weight: .bold, design: .rounded))
                     Text("VOICE STUDIO").font(.system(size: 9, weight: .semibold)).tracking(2.2).foregroundStyle(.secondary)
                 }
             }
@@ -1892,9 +1651,9 @@ struct CloneWorkspace: View {
     var body: some View {
         VStack(spacing: 0) {
             WorkspaceHeader(
-                eyebrow: "Speech without boundaries",
-                title: "Clone. Create. Speak Freely.",
-                subtitle: "600+ languages. Your voice. Infinite possibilities."
+                eyebrow: "Local AI Voice Studio for macOS",
+                title: "Voice Clone",
+                subtitle: "Create speech locally from a reference recording with the OmniVoice model."
             )
 
             HStack(alignment: .top, spacing: 16) {
@@ -2465,7 +2224,7 @@ struct TrainedVoiceGrid: View {
                 ContentUnavailableView(
                     "No Trained Voices",
                     systemImage: "brain.head.profile",
-                    description: Text("Complete Voice Training and save a named voice to add it here.")
+                    description: Text("Existing saved engines remain available for inference. Training is not included in this release.")
                 )
                 .padding(.top, 70)
             } else {
@@ -3190,7 +2949,6 @@ struct EngineLabWorkspace: View {
         }
         .onAppear {
             model.checkEngineLab()
-            model.checkPersonalModel()
         }
     }
 }
@@ -3257,457 +3015,9 @@ struct BlindEngineTake: View {
 }
 
 
-struct PersonalVoiceWorkspace: View {
-    @EnvironmentObject var model: AppModel
-
-    var body: some View {
-        VStack(spacing: 0) {
-            WorkspaceHeader(
-                eyebrow: "Voice training lab",
-                title: "Voice Training",
-                subtitle: "Prepare a clean speech dataset and train your own OmniVoice engine."
-            )
-
-            ScrollView {
-                VStack(spacing: 14) {
-                    Card {
-                        VStack(alignment: .leading, spacing: 16) {
-                            StepHeader(
-                                number: 1,
-                                title: "Voice Dataset",
-                                subtitle: "Choose a folder of clean clips. Matching .txt transcripts are preferred."
-                            )
-
-                            HStack {
-                                Button(action: model.choosePersonalDatasetFolder) {
-                                    Label(
-                                        model.personalDatasetFolder?.lastPathComponent ?? "Choose Recording Folder",
-                                        systemImage: "folder.badge.plus"
-                                    )
-                                }
-                                Spacer()
-                                Picker("Language", selection: $model.personalLanguage) {
-                                    Text("English").tag("en")
-                                    Text("French").tag("fr")
-                                    Text("Spanish").tag("es")
-                                    Text("German").tag("de")
-                                }
-                                .frame(width: 160)
-                            }
-
-                            Toggle(
-                                "Auto-transcribe clips without matching .txt files using local Whisper",
-                                isOn: $model.personalAutoTranscribe
-                            )
-
-                            Text("Best results: one speaker, dry/clean recordings, consistent microphone, and roughly 20–60 minutes of speech. Quiet usable clips are normalized automatically.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-
-                            Button(action: model.preparePersonalDataset) {
-                                HStack {
-                                    if model.personalPreparing { ProgressView().controlSize(.small) }
-                                    Image(systemName: "wand.and.stars")
-                                    Text(model.personalPreparing ? "Preparing…" : "Analyse & Prepare Dataset").bold()
-                                }
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(model.personalDatasetFolder == nil || model.personalPreparing)
-                        }
-                    }
-
-                    Card {
-                        VStack(alignment: .leading, spacing: 16) {
-                            StepHeader(
-                                number: 2,
-                                title: "Dataset Quality",
-                                subtitle: "Only accepted clips are written into the OmniVoice training manifests."
-                            )
-
-                            HStack(spacing: 24) {
-                                MetricTile(value: "\(model.personalGoodClips)", label: "Accepted", good: true)
-                                MetricTile(value: "\(model.personalRejectedClips)", label: "Rejected", good: model.personalRejectedClips == 0)
-                                MetricTile(value: String(format: "%.1f", model.personalMinutes), label: "Minutes", good: model.personalMinutes >= 20)
-                            }
-
-                            PersonalVoiceStatusBanner(
-                                status: model.personalStatus,
-                                isPreparing: model.personalPreparing,
-                                isTraining: model.personalTraining,
-                                accepted: model.personalGoodClips,
-                                minutes: model.personalMinutes,
-                                phase: model.personalTrainingPhase,
-                                step: model.personalTrainingStep,
-                                totalSteps: model.personalTrainingTotal
-                            )
-
-                            if !model.personalRejectionDetails.isEmpty {
-                                Divider().opacity(0.25)
-                                VStack(alignment: .leading, spacing: 7) {
-                                    Text("Rejected clips").font(.headline)
-                                    ForEach(model.personalRejectionDetails, id: \.self) { detail in
-                                        HStack(alignment: .top, spacing: 8) {
-                                            Image(systemName: "exclamationmark.circle.fill")
-                                                .foregroundStyle(.orange)
-                                            Text(detail)
-                                                .font(.caption)
-                                                .textSelection(.enabled)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    Card {
-                        VStack(alignment: .leading, spacing: 16) {
-                            StepHeader(
-                                number: 3,
-                                title: "Train Voice",
-                                subtitle: "Train a compact OmniVoice LoRA locally, then save it as a named engine."
-                            )
-
-                            if model.personalStatus.lowercased().contains("complete") {
-                                PersonalTrainingStatusBanner(
-                                    status: model.personalStatus,
-                                    running: false,
-                                    phase: "Complete",
-                                    step: model.personalTrainingTotal,
-                                    totalSteps: model.personalTrainingTotal,
-                                    adapterPath: model.personalAdapterPath
-                                )
-
-                                VStack(alignment: .leading, spacing: 12) {
-                                    Text("Save Trained Voice")
-                                        .font(.headline)
-
-                                    Text("Give this trained voice a name. The saved name becomes an engine you can select directly in Engine Lab.")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-
-                                    HStack(spacing: 10) {
-                                        TextField("e.g. Dwayne Studio v1", text: $model.trainedVoiceName)
-                                            .textFieldStyle(.roundedBorder)
-
-                                        Button(action: model.saveTrainedVoice) {
-                                            HStack {
-                                                if model.savingTrainedVoice {
-                                                    ProgressView().controlSize(.small)
-                                                }
-                                                Image(systemName: "square.and.arrow.down")
-                                                Text(model.savingTrainedVoice ? "Saving…" : "Save Voice")
-                                            }
-                                        }
-                                        .buttonStyle(.borderedProminent)
-                                        .disabled(
-                                            model.savingTrainedVoice ||
-                                            model.trainedVoiceName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                        )
-                                    }
-
-                                    if !model.savedTrainedVoiceName.isEmpty {
-                                        Label(
-                                            "\(model.savedTrainedVoiceName) added to Engine Lab",
-                                            systemImage: "checkmark.circle.fill"
-                                        )
-                                        .font(.caption)
-                                        .foregroundStyle(.green)
-                                    } else if !model.personalMergeStatus.isEmpty {
-                                        Text(model.personalMergeStatus)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                                .padding(14)
-                                .background(Color.green.opacity(0.045))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .stroke(Color.green.opacity(0.16), lineWidth: 1)
-                                )
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
-
-                                if !model.personalAdapterPath.isEmpty {
-                                    Label(
-                                        "Checkpoint: \(model.personalAdapterPath)",
-                                        systemImage: "checkmark.seal.fill"
-                                    )
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .textSelection(.enabled)
-                                }
-
-                                if !model.personalTrainingLog.isEmpty {
-                                    DisclosureGroup("View training log") {
-                                        ScrollView {
-                                            Text(model.personalTrainingLog)
-                                                .font(.system(size: 11, design: .monospaced))
-                                                .textSelection(.enabled)
-                                                .frame(maxWidth: .infinity, alignment: .leading)
-                                        }
-                                        .frame(height: 180)
-                                        .padding(10)
-                                        .background(Color.black.opacity(0.25))
-                                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                                        .padding(.top, 8)
-                                    }
-                                    .font(.caption.weight(.semibold))
-                                }
-                            } else {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 5) {
-                                        Text("Training mode")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                        Text("LoRA • SDPA • single process")
-                                            .font(.headline)
-                                    }
-
-                                    Spacer()
-
-                                    Button(action: model.startPersonalTraining) {
-                                        HStack {
-                                            if model.personalTraining {
-                                                ProgressView().controlSize(.small)
-                                            }
-                                            Image(systemName: "cpu")
-                                            Text(model.personalTraining ? "Training…" : "Start LoRA Training")
-                                        }
-                                    }
-                                    .buttonStyle(.borderedProminent)
-                                    .disabled(model.personalGoodClips == 0 || model.personalTraining)
-                                }
-
-                                PersonalTrainingStatusBanner(
-                                    status: model.personalStatus,
-                                    running: model.personalTraining,
-                                    phase: model.personalTrainingPhase,
-                                    step: model.personalTrainingStep,
-                                    totalSteps: model.personalTrainingTotal,
-                                    adapterPath: model.personalAdapterPath
-                                )
-
-                                Text("Apple Silicon training uses Mac-safe single-process data loading.")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-
-                                if !model.personalTrainingLog.isEmpty {
-                                    ScrollView {
-                                        Text(model.personalTrainingLog)
-                                            .font(.system(size: 11, design: .monospaced))
-                                            .textSelection(.enabled)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                    }
-                                    .frame(height: 180)
-                                    .padding(10)
-                                    .background(Color.black.opacity(0.25))
-                                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                                }
-                            }
-                        }
-                    }
-
-                    Card {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("What happens").font(.headline)
-                            Label("Clips are checked for duration, clipping and usable speech level", systemImage: "waveform.path.ecg")
-                            Label("Audio is normalized to 24 kHz mono WAV", systemImage: "waveform")
-                            Label("Train / dev JSONL manifests are created locally", systemImage: "doc.text")
-                            Label("OmniVoice audio tokens are extracted", systemImage: "square.stack.3d.up")
-                            Label("A LoRA adapter is trained without overwriting the base model", systemImage: "brain.head.profile")
-                            Label("The adapter can later enter Engine Lab against zero-shot OmniVoice", systemImage: "testtube.2")
-                        }
-                        .font(.caption)
-                    }
-                }
-                .padding(20)
-                .frame(maxWidth: 900)
-                .frame(maxWidth: .infinity)
-            }
-        }
-    }
-}
-
-
-struct PersonalVoiceStatusBanner: View {
-    let status: String
-    let isPreparing: Bool
-    let isTraining: Bool
-    let accepted: Int
-    let minutes: Double
-    let phase: String
-    let step: Int
-    let totalSteps: Int
-
-    private var failed: Bool {
-        status.lowercased().contains("fail")
-    }
-
-    private var ready: Bool {
-        status.lowercased().contains("dataset ready")
-    }
-
-    private var tint: Color {
-        if failed { return .red }
-        if ready { return .green }
-        if isPreparing || isTraining { return OVTheme.accent }
-        return .secondary
-    }
-
-    private var title: String {
-        if isPreparing { return "PREPARING DATASET" }
-        if isTraining { return "TRAINING IN PROGRESS" }
-        if failed { return "ACTION REQUIRED" }
-        if ready { return "DATASET READY" }
-        return status.uppercased()
-    }
-
-    var body: some View {
-        HStack(spacing: 13) {
-            ZStack {
-                Circle()
-                    .fill(tint.opacity(0.14))
-                    .frame(width: 42, height: 42)
-
-                if isPreparing || isTraining {
-                    ProgressView().controlSize(.small)
-                } else {
-                    Image(systemName: failed ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(tint)
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.system(size: 12, weight: .bold))
-                    .tracking(1.15)
-                    .foregroundStyle(tint)
-
-                if isTraining {
-                    Text("\(phase) • step \(step) of \(totalSteps)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else if ready {
-                    Text("\(accepted) clips accepted • \(String(format: "%.1f", minutes)) min prepared")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text(status)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Spacer()
-        }
-        .padding(13)
-        .background(tint.opacity(0.065))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(tint.opacity(0.18), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-    }
-}
-
-struct PersonalTrainingStatusBanner: View {
-    let status: String
-    let running: Bool
-    let phase: String
-    let step: Int
-    let totalSteps: Int
-    let adapterPath: String
-
-    private var failed: Bool { status.lowercased().contains("fail") }
-    private var complete: Bool { status.lowercased().contains("complete") }
-
-    private var tint: Color {
-        if failed { return .red }
-        if complete { return .green }
-        if running { return OVTheme.accent }
-        return .secondary
-    }
-
-    private var headline: String {
-        if running { return "TRAINING IN PROGRESS" }
-        if complete { return "TRAINING COMPLETE" }
-        if failed { return "TRAINING FAILED" }
-        return "READY TO TRAIN"
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 10) {
-                if running {
-                    ProgressView().controlSize(.small)
-                } else {
-                    Image(systemName: complete ? "checkmark.seal.fill" : (failed ? "xmark.octagon.fill" : "cpu"))
-                        .foregroundStyle(tint)
-                }
-
-                Text(headline)
-                    .font(.system(size: 12, weight: .bold))
-                    .tracking(1.0)
-                    .foregroundStyle(tint)
-
-                Spacer()
-
-                if running && totalSteps > 0 {
-                    Text("\(step) / \(totalSteps)")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            if running {
-                Text(phase)
-                    .font(.headline)
-
-                if totalSteps > 0 {
-                    ProgressView(value: Double(step), total: Double(totalSteps))
-                }
-            } else if complete && !adapterPath.isEmpty {
-                Text("Trained OmniVoice engine created")
-                    .font(.headline)
-            } else if failed {
-                Text("Open the training log below for the exact error.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("Dataset prepared. Start a Mac-safe single-process LoRA run.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(14)
-        .background(tint.opacity(0.06))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(tint.opacity(0.18), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-    }
-}
-
-struct MetricTile: View {
-    let value: String
-    let label: String
-    let good: Bool
-
-    var body: some View {
-        VStack(spacing: 5) {
-            Text(value)
-                .font(.system(size: 26, weight: .bold, design: .rounded))
-                .foregroundStyle(good ? .green : .primary)
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(14)
-        .background(Color.white.opacity(0.035))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-    }
+enum DependencyCredits {
+    static let boson = "Built with Higgs Materials licensed from Boson AI USA, Inc., Copyright Boson AI USA, Inc., All Rights Reserved and Meta Llama 3 licensed under the Meta Llama 3 Community License, Copyright Meta Platforms, Inc., All Right Reserved"
+    static let meta = "Built with Meta Llama 3; based on Meta Llama 3."
 }
 
 struct SettingsWorkspace: View {
@@ -3716,13 +3026,31 @@ struct SettingsWorkspace: View {
     var body: some View {
         VStack(spacing: 0) {
             WorkspaceHeader(
-                eyebrow: "OmniVoice preferences",
+                eyebrow: "VoxAster preferences",
                 title: "Settings",
-                subtitle: "Playback, storage, inference and local runtime."
+                subtitle: "Local AI Voice Studio for macOS. Playback, storage, inference and local runtime."
             )
 
             ScrollView {
                 VStack(spacing: 14) {
+                    Card {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Label("Credits and licences", systemImage: "doc.text")
+                                .font(.headline)
+                            Text("VoxAster original code: MIT. OmniVoice code: Apache-2.0. OmniVoice weights: separate non-commercial terms.")
+                            Text(DependencyCredits.boson)
+                            Text(DependencyCredits.meta)
+                            Text("The unmodified audio tokenizer uses the Boson Higgs Audio 2 Community License, including Meta's licence and acceptable-use terms. Training/model improvement is not included.")
+                            Button("Open bundled licences") {
+                                if let resources = Bundle.main.resourceURL {
+                                    NSWorkspace.shared.open(resources.appendingPathComponent("Licenses"))
+                                }
+                            }
+                        }
+                        .font(.callout)
+                        .textSelection(.enabled)
+                    }
+
                     Card {
                         VStack(alignment: .leading, spacing: 16) {
                             Label("General", systemImage: "slider.horizontal.3")
@@ -3757,7 +3085,7 @@ struct SettingsWorkspace: View {
                                 .font(.headline)
 
                             SettingsStatusRow(label: "Device", value: "Apple Silicon / MPS", ready: model.modelReady)
-                            SettingsStatusRow(label: "OmniVoice", value: model.modelReady ? "Ready" : "Loading", ready: model.modelReady)
+                            SettingsStatusRow(label: "OmniVoice model", value: model.modelReady ? "Ready" : "Loading", ready: model.modelReady)
                             SettingsStatusRow(label: "F5-TTS", value: model.f5Available ? "Ready" : "Unavailable", ready: model.f5Available)
 
                             Divider().opacity(0.2)

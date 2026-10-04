@@ -134,6 +134,22 @@ class ProductionTests(unittest.TestCase):
         for segment in self.job['segments']:
             if segment['kind']=='speech': self.store.render(self.job['id'],segment['id'],self.model,self.generate)
 
+    def test_pre_migration_production_keeps_retry_with_identical_audio_assets(self):
+        job = self.store.read(self.job['id'])
+        del job['runtime']['audio_tokenizer']
+        self.store.save(job)
+        result = self.store.render(job['id'], '0', self.model, self.generate)
+        self.assertEqual(result['segments'][0]['state'], 'complete')
+        self.assertEqual(result['segments'][0]['seed'], job['segments'][0]['seed'])
+        from provenance import compatible_production_runtime, MANIFEST
+        for key in ('model_revision', 'expected_package_commit', 'native_app_version'):
+            changed = copy.deepcopy(job['runtime']); changed[key] = 'changed'
+            self.assertFalse(compatible_production_runtime(changed))
+        changed = copy.deepcopy(MANIFEST)
+        changed['audio_tokenizer']['sha256']['model.safetensors'] = 'different'
+        with patch('provenance.MANIFEST', changed):
+            self.assertFalse(compatible_production_runtime(job['runtime']))
+
     def test_frozen_reference_settings_and_stable_seed(self):
         self.settings.update(seed=999,steps=8,ref_text='Changed')
         self.store.render(self.job['id'],'0',self.model,self.generate)

@@ -36,7 +36,7 @@ enum SafeFiles {
             throw ReliabilityError(message: "The export destination is the source audio (or an equivalent path). Choose a different filename or folder. No file was changed.")
         }
         let parent = destination.deletingLastPathComponent()
-        let temporary = parent.appendingPathComponent(".omnivoice-export-\(UUID().uuidString).wav")
+        let temporary = parent.appendingPathComponent(".voxaster-export-\(UUID().uuidString).wav")
         defer { try? FileManager.default.removeItem(at: temporary) }
         let expected = try digest(source)
         try copy(source, temporary)

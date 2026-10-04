@@ -1,586 +1,110 @@
-# 🎙 OmniVoice Mac
+# VoxAster
 
-**A native macOS studio for local voice cloning, voice design, speech generation, model comparison and personal voice training.**
+**Local AI Voice Studio for macOS**
 
-OmniVoice Mac turns the open-source [k2-fsa OmniVoice](https://github.com/k2-fsa/OmniVoice) model into a polished native macOS application built around local, private voice workflows.
+A native macOS app for local voice cloning, voice design and speech production on Apple Silicon. Built with SwiftUI and the [k2-fsa OmniVoice](https://github.com/k2-fsa/OmniVoice) synthesis engine. This is an independent project, not an official k2-fsa app.
 
-Instead of operating OmniVoice through scripts or a browser interface, OmniVoice Mac provides a complete SwiftUI studio for creating voices, generating speech, managing projects, benchmarking engines and training personalised LoRA voice models directly on Apple Silicon.
+**Version 3.7.0 · macOS 14+ · Apple Silicon · source distribution**
 
-> **Current version:** v3.7.0
-> **Platform:** macOS / Apple Silicon  
-> **Status:** Active development
+The app code and original icons are MIT licensed. **Model weights have separate terms, including non-commercial restrictions.** Free download does not mean unrestricted commercial use. Read [third-party licences](THIRD_PARTY.md) before using or distributing models or outputs.
 
-Phase 3 adds a dedicated Performance workspace for exact pauses, segment gain, retained retries and deterministic master assembly. See [the Phase 3 behavior and boundaries](PHASE3.md), [the native controls reference](PHASE2.md), and [the accepted Phase 1 generation contract](PHASE1.md). These app-level controls do not add native emotional acting. Build with `./build.command`; verify with `./test.command`. These commands do not install or upgrade dependencies.
+## Model attribution
 
----
+Built with Higgs Materials licensed from Boson AI USA, Inc., Copyright Boson AI USA, Inc., All Rights Reserved and Meta Llama 3 licensed under the Meta Llama 3 Community License, Copyright Meta Platforms, Inc., All Right Reserved.
 
-## ✨ What is OmniVoice Mac?
+Built with Meta Llama 3; based on Meta Llama 3. Copies of the [Boson agreement](Licenses/BOSON-HIGGS-AUDIO-2.txt), [Meta agreement and acceptable-use policy](Licenses/META-LLAMA-3.txt) and [Notice](Notice) accompany this source and built app. These are restricted community licences, not MIT/Apache or unrestricted open-source terms.
 
-OmniVoice Mac started as an experiment:
+## Features
 
-> *Can OmniVoice be turned into a genuinely useful native Mac application?*
+- Clone a voice from an imported recording or microphone take; save reusable references.
+- Design voices using supported speaker attributes, with native vocal-event and pronunciation controls.
+- Generate variants, edit Long Form chunks, manage projects and recover editable drafts.
+- Performance: exact pauses, ±3 dB segment gain, retained segment retries and deterministic master rebuilds.
+- Optional comparison with separately installed F5-TTS and inference from existing saved engines.
 
-It has since grown into a local voice-production environment with multiple workflows built around the OmniVoice engine.
+Training, dataset token extraction, LoRA/fine-tuning and model improvement are not included in this release.
 
-Everything from voice references and generated audio to trained voice models can remain on your Mac.
+Performance controls are audio timing/loudness operations, not emotional acting. Unknown bracket tags are rejected. See [script controls](docs/CONTROLS.md).
 
----
+## Requirements
 
-## 🎤 Voice Clone
+- Apple Silicon Mac, macOS 14 or newer; Intel/Windows/Linux app builds are not supported.
+- Xcode Command Line Tools (`xcode-select --install`), including Swift and the macOS SDK.
+- Homebrew Python **3.12**, Git and FFmpeg (`brew install python@3.12 ffmpeg git`).
+- Internet for dependency/model downloads; several GB of free space for the model and environments. No minimum RAM guarantee has been established.
+- A recording you have permission to use. Microphone access is needed only for recording.
 
-Clone a voice from a short reference recording and generate new speech locally.
+## Installation and build from source
 
-### Features
+Download the source archive or clone this repository using its GitHub **Code** menu, then enter the extracted/clone directory (named `VoxAster` below). No prebuilt installer or model weights are included.
 
-- Import WAV, MP3 and M4A references
-- Record directly from the Mac microphone
-- Save reusable reference voices
-- Reference transcript support
-- Cross-language voice cloning workflow
-- Expression controls
-- Pronunciation dictionary
-- Adjustable generation speed
-- Diffusion-step controls
-- Guidance controls
-- Multiple generation presets
-- Local WAV output
-- Integrated waveform and playback
-
-### Expression controls
-
-Verified native vocal events are inserted at the current cursor through buttons and grouped menus:
-
-- Laughter
-- Sigh
-- Confirmation
-- Question: En, Ah, Oh, Ei, Yi
-- Surprise: Ah, Oh, Wa, Yo
-- Dissatisfaction / Hmm
-
-These are vocal events, not persistent emotional modes. All 13 exact tokens, pronunciation rules, validation behavior and route boundaries are documented in [PHASE2.md](PHASE2.md).
-
----
-
-## 🎨 Voice Design
-
-Create entirely new voices without supplying a reference recording.
-
-Voice Design exposes OmniVoice's controllable speaker characteristics through a native visual interface.
-
-### Voice controls
-
-- Gender
-- Age
-- Pitch
-- Delivery style
-- English accent
-- Chinese dialect
-- Automatic voice generation
-
-### Creator presets
-
-Quickly configure voices for common use cases:
-
-- 📖 Audiobook
-- 📰 News Anchor
-- 🎮 NPC
-- 🎙 Podcast
-- 📚 Language Tutor
-- 🎧 Customer Support
-- 🌙 Whisper
-
-Each preset configures the underlying voice characteristics while remaining editable.
-
----
-
-## 🧠 Voice Training
-
-OmniVoice Mac can train a personalised **LoRA voice model locally on Apple Silicon**.
-
-The complete pipeline runs on the Mac:
-
-```text
-Recordings
-    ↓
-Dataset Analysis
-    ↓
-Transcription
-    ↓
-Audio Normalisation
-    ↓
-Train / Dev Split
-    ↓
-Audio Token Extraction
-    ↓
-LoRA Training
-    ↓
-Checkpoint
-    ↓
-Merged OmniVoice Model
-    ↓
-Saved Trained Voice
+```sh
+cd VoxAster
+./setup-runtime.command
+./verify-runtime.command
+./build.command
+open .build/VoxAster.app
 ```
 
-### Dataset preparation
+Setup creates `~/Documents/OmniVoice-Mac/.venv` and downloads the exact model snapshot declared in `Backend/runtime.json`. It refuses to overwrite an existing runtime. It does not install the app, change model pins, or require an API key. If setup is interrupted, inspect the partially created environment before moving it aside and retrying. Existing users should run `./prepare-models.command` once to cache the official, verified audio tokenizer, then `./verify-runtime.command`. This does not install or upgrade Python packages.
 
-Voice Training can:
+The app deliberately uses that per-user runtime path regardless of where the source checkout lives. Build/tests can select a different Python with `OMNIVOICE_PYTHON`; that override does not change the native app runtime location. `OMNIVOICE_SETUP_PYTHON` and `OMNIVOICE_SETUP_VENV` are setup/test overrides.
 
-- analyse recording folders
-- reject unusable clips
-- normalise accepted audio
-- convert audio to 24 kHz mono WAV
-- use existing transcripts
-- transcribe missing transcripts with local Whisper
-- create training manifests
-- extract OmniVoice audio tokens
+`requirements.txt` pins OmniVoice to commit `08be0b4ccbac3e13e374e86fbfead4b4cac343e2` (package 0.2.1); `constraints-macos-py312.txt` records the validated dependency environment. The model and text tokenizer use snapshot `c5fdb5ccb189668d56333f77ba2629f4cd7535f4`. The separate audio tokenizer uses official `bosonai/higgs-audio-v2-tokenizer` revision `815a03f1b57dcb5ae918db415f22cd0c8a6f0f54`, verified against pinned SHA-256 hashes. Missing or changed audio assets stop startup; there is no mirror fallback. See [tokenizer provenance](docs/TOKENIZER.md). Build and test commands do not install dependencies.
 
-### Apple Silicon training
+For an optional per-user application installation, quit every VoxAster instance and any legacy app first and run `./install.command`. It verifies the build, requires port 8011 to be free, stages on the destination filesystem and retains a timestamped backup of any existing app. The destination is `~/Applications/VoxAster.app`; the legacy app bundle is left untouched. Both apps share the same data and cannot run their backends simultaneously. No administrator access is needed. Keep the backup for rollback.
 
-The training pipeline includes macOS-specific compatibility work for:
+Source builds are ad-hoc signed, **not Developer ID signed or notarized**. Do not disable Gatekeeper globally. Review the source and build locally; public binary distribution needs a separate signing/notarization process.
 
-- PyTorch MPS
-- single-process DataLoaders
-- macOS multiprocessing behaviour
-- DataLoader prefetch handling
-- SDPA
-- MPS-safe precision
-- Homebrew / FFmpeg discovery
+## First use
 
-Training progress is displayed directly inside the application.
+1. Wait for **Ready**. Settings shows the exact runtime provenance.
+2. Open Voice Clone and choose a short, clean reference recording. A transcript avoids automatic reference transcription and its optional model download.
+3. Enter a short script, choose settings and Generate Speech. Export a WAV using the output controls.
+4. In Performance, use Pause/Louder/Quieter controls, prepare a production, render segments and rebuild its master. Retrying one segment retains other successful segments.
+5. Save references in Library and metadata in Projects. Editable drafts recover separately from audio productions.
 
-### Trained Voice Library
+Standard macOS editing shortcuts apply. Quit with Command-Q; closing a window is not the same as quitting the app. Only one app backend can use port 8011 at a time.
 
-Completed models can be named and saved:
+## Models and engines
 
-```text
-Dwayne Studio v1
-Dwayne Studio v2
-Narration Voice
-Podcast Test
+Core setup downloads the pinned OmniVoice snapshot automatically; normal app startup loads that cache without downloading the base model. Missing reference transcripts can trigger a separate Whisper download. Optional F5 requires separate setup and may download additional assets. Training is not available. Models and Python runtimes are not bundled into the app. Their terms differ from the app’s MIT licence.
+
+## Privacy, permissions and storage
+
+Synthesis and transcription run locally. The app does not implement audio uploads to external services or analytics. Setup and optional model loading contact package/model hosts; dependencies may perform download checks. This is not an unconditional air-gapped/offline claim. See [PRIVACY.md](PRIVACY.md) for exact storage, network and removal details.
+
+- References, WAVs, existing saved engines and productions: `~/Documents/OmniVoice-Mac/`
+- Projects, history, reference metadata and drafts: `~/Library/Application Support/OmniVoice/`
+- Backend log: `~/Library/Logs/OmniVoice/native-backend.log`
+- Downloaded models: Hugging Face's user cache (normally `~/.cache/huggingface/`).
+
+Legacy storage names and the bundle identifier are deliberately preserved so existing projects, voices, drafts and preferences remain accessible. See [branding and compatibility](docs/BRANDING.md).
+
+No user recordings or model weights are shipped in this repository. The app is not sandboxed; it has your user's filesystem permissions. macOS may request microphone and Documents access.
+
+## Troubleshooting and limitations
+
+- **Runtime setup required:** run setup, or `./verify-runtime.command` if the environment exists.
+- **Loading/Backend stopped:** inspect the backend log, verify the exact model is cached, and check `lsof -nP -iTCP:8011 -sTCP:LISTEN`. Quit the app that owns the port; do not kill an unidentified process.
+- **Wrong package/model:** restore the verified environment; do not change pins just to bypass the provenance check.
+- **Microphone denied:** System Settings → Privacy & Security → Microphone.
+- **Literal Markdown or odd speech:** asterisks/Markdown are not acting controls; use plain text and verified tokens.
+- Performance supports base OmniVoice reference cloning only. `[deadpan]`, `[sarcastic]`, `[whisper]` and `[shout]` are not inline controls. F5 does not accept OmniVoice markup.
+- Output quality, accent and identity continuity require listening checks. Seeds are forwarded; bit-identical synthesis across hardware is not guaranteed.
+- Drafts restore editable text/settings, not unsaved output takes. Back up the data directories for durable storage.
+- Training is removed from this public release; existing saved engines/data are preserved. See [engine limitations](docs/TRAINING.md). F5 is optional and not provisioned by core setup.
+- Higgs materials/outputs must not be used to improve other large language models. Boson requires separate permission above 100,000 annual active users across your/affiliates’ products or services in the preceding calendar year. The incorporated acceptable-use terms also apply; see [third-party obligations](THIRD_PARTY.md).
+
+## Development
+
+```sh
+./test.command                   # backend + Swift + signed release/import test
+./verify-runtime.command         # dependencies, cached snapshot and provenance
+git diff --check
+python3 tools/audit-release.py    # working tree/history heuristics and doc links
 ```
 
-Each saved model becomes an independent engine that can be used in **Engine Lab**.
+Tests mock synthesis and use temporary output directories. Real model startup and listening acceptance remain separate. No lint configuration is currently provided. Contributions: [CONTRIBUTING.md](CONTRIBUTING.md). Security reports: [SECURITY.md](SECURITY.md). Release history: [CHANGELOG.md](CHANGELOG.md).
 
----
-
-## 🧪 Engine Lab
-
-Engine Lab provides randomized blind A/B testing between installed speech engines.
-
-Select:
-
-```text
-Engine 1
-        vs
-Engine 2
-```
-
-Both receive:
-
-- the same reference voice
-- the same script
-- the same speed
-- supported generation settings (F5 receives only Speed; native markup and controls are restricted)
-
-The outputs are then randomized as **Take A** and **Take B**.
-
-Listen first.
-
-Choose the better result.
-
-Then reveal which engine generated each take.
-
-### Supported engines
-
-Depending on the local installation:
-
-- **OmniVoice Zero-Shot**
-- **Saved OmniVoice trained voices**
-- **F5-TTS**
-
-This makes it possible to objectively compare:
-
-```text
-OmniVoice Zero-Shot
-        vs
-Dwayne Studio v1
-```
-
-or:
-
-```text
-OmniVoice
-   vs
-F5-TTS
-```
-
-without knowing which result is which beforehand.
-
----
-
-## 📚 Library
-
-OmniVoice Mac maintains a local asset library for:
-
-### Reference Voices
-
-Reusable source voices for cloning and benchmarking.
-
-### Trained Voices
-
-Named OmniVoice models produced through Voice Training.
-
-### Generated Audio
-
-Previous speech generations with playback and file access.
-
----
-
-## 📜 History
-
-Successful generations are recorded locally.
-
-History provides access to:
-
-- generation type
-- generation time
-- script preview
-- playback
-- export
-- Finder location
-- deletion
-
-Generation types include:
-
-```text
-Voice Clone
-Voice Design
-Auto Voice
-Long Form
-```
-
----
-
-## 📄 Long Form
-
-Long Form is designed for larger speech-production jobs such as:
-
-- narration
-- audiobooks
-- documentaries
-- podcasts
-- presentations
-- long scripts
-
-It includes:
-
-- dedicated reference-voice selection
-- pronunciation rules
-- chunked generation
-- production progress
-- combined final output
-
----
-
-## Performance timing and assembly
-
-Use the **Performance** workspace with an OmniVoice reference clone. Pause, Louder and Quieter chips insert app-level directions separately from the 13 native vocal events.
-
-Prepare freezes the script, reference, settings and seeds. Render missing segments, preview/retry individual segments, and rebuild the master from retained audio without re-synthesizing. `[pause 500ms]` inserts exactly 12,000 zero samples at 24 kHz after speech post-processing. Louder/Quieter apply ±3 dB to the next segment with common headroom and edge fades; they do not mean shout/whisper. Unknown bracket controls block generation.
-
-See [PHASE3.md](PHASE3.md) for gain scope, edge trimming, exact sample behavior, persistence, engine boundaries and current limitations.
-
----
-
-## 🗂 Projects
-
-Projects separate production work from global application history.
-
-Each project maintains its own:
-
-- project name
-- reference voice
-- pronunciation rules
-- generated outputs
-
-Projects can be created, saved, reopened and deleted.
-
-Outputs generated while a project is active are associated with that project without removing them from the global History.
-
----
-
-## ⚙️ Generation Controls
-
-OmniVoice Mac exposes the important inference controls while providing simpler presets for everyday use.
-
-### Presets
-
-| Preset | Purpose |
-|---|---|
-| Fast Preview | Faster iteration |
-| Natural | Balanced default |
-| Maximum Quality | Higher generation quality |
-| Narration | Long-form speech |
-
-### Advanced controls
-
-- Speed
-- Diffusion steps
-- Guidance (conditioning strength)
-- Denoise and Seed
-- Target duration (individual passages/Variants; overrides Speed-based estimation)
-- Time shift, position temperature, token temperature and codebook layer penalty
-- Reset to native defaults
-
-See [the control table and engine/route boundaries](PHASE2.md#generation-parameters-and-boundaries).
-
----
-
-## 🖥 Native macOS Interface
-
-OmniVoice Mac is not an Electron wrapper or browser window.
-
-The application UI is built using **SwiftUI** and integrates with native macOS functionality including:
-
-- microphone permissions
-- native file selection
-- Finder
-- local audio playback
-- drag and drop
-- native application storage
-- Apple Silicon acceleration
-
-The speech backend runs locally and communicates with the native application through a localhost API.
-
----
-
-## 🏗 Architecture
-
-```text
-┌───────────────────────────────────────┐
-│            OmniVoice Mac              │
-│               SwiftUI                 │
-├───────────────────────────────────────┤
-│                                       │
-│ Voice Clone        Voice Design       │
-│ Long Form          Voice Training     │
-│ Library            Projects           │
-│ History            Engine Lab         │
-│                                       │
-└──────────────────┬────────────────────┘
-                   │
-             localhost API
-                   │
-┌──────────────────▼────────────────────┐
-│             FastAPI Backend           │
-├───────────────────────────────────────┤
-│                                       │
-│ OmniVoice                            │
-│ F5-TTS                               │
-│ Whisper                              │
-│ PyTorch / MPS                        │
-│ FFmpeg                               │
-│ LoRA Training                        │
-│                                       │
-└──────────────────┬────────────────────┘
-                   │
-                   ▼
-             Apple Silicon
-```
-
----
-
-## 🔒 Local-first
-
-OmniVoice Mac is designed around local workflows.
-
-Application data is stored under locations such as:
-
-```text
-~/Documents/OmniVoice-Mac/
-```
-
-This can include:
-
-```text
-outputs/
-voices/
-personal-voice/
-personal-voice/engines/
-```
-
-Application metadata is stored in macOS Application Support.
-
-Large models, recordings, generated audio, training datasets and personal voice checkpoints should **not** be committed to Git.
-
----
-
-## 📦 Repository Structure
-
-```text
-OmniVoice-Mac/
-│
-├── Assets/
-│   └── App icon assets
-│
-├── Backend/
-│   ├── backend.py
-│   ├── generation.py
-│   ├── speech_text.py
-│   ├── performance_script.py
-│   ├── performance_audio.py
-│   ├── performance.py
-│   ├── provenance.py
-│   └── runtime.json
-│
-├── Sources/
-│   ├── OmniVoice.swift
-│   ├── GenerationRequest.swift
-│   ├── SpeechEditor.swift
-│   ├── NativeAdvancedControls.swift
-│   └── PerformanceWorkspace.swift
-│
-├── Tests/
-├── build.command
-├── test.command
-├── PHASE1.md
-├── PHASE2.md
-├── PHASE3.md
-├── install.command
-├── setup-personal-training.command
-├── repair-mac-training.command
-├── repair-training-config.command
-│
-├── .gitignore
-└── README.md
-```
-
----
-
-## 🚀 Installation
-
-### Requirements
-
-- Apple Silicon Mac
-- macOS
-- Python 3
-- Xcode Command Line Tools
-- Homebrew
-- FFmpeg
-- OmniVoice Python environment
-
-The current application expects the OmniVoice environment at:
-
-```text
-~/Documents/OmniVoice-Mac/.venv
-```
-
-Install the native application with:
-
-```bash
-chmod +x install.command
-./install.command
-```
-
-The application is installed to:
-
-```text
-~/Applications/OmniVoice.app
-```
-
----
-
-## 🧠 Voice Training Setup
-
-Voice Training uses a separate training environment.
-
-Run:
-
-```bash
-chmod +x setup-personal-training.command
-./setup-personal-training.command
-```
-
-Training data and checkpoints are intentionally kept outside the Git repository.
-
----
-
-## 🛠 Technology
-
-### Native application
-
-- Swift
-- SwiftUI
-- AppKit
-- AVFoundation
-
-### Backend
-
-- Python
-- FastAPI
-- Uvicorn
-
-### AI / Audio
-
-- k2-fsa OmniVoice
-- PyTorch
-- Apple Metal Performance Shaders (MPS)
-- Whisper
-- F5-TTS
-- FFmpeg
-- LoRA
-
----
-
-## 🧭 Current Development Direction
-
-The core local studio is now functional.
-
-Current areas of development include:
-
-- further UI refinement
-- project workflow improvements
-- larger Personal Voice training datasets
-- trained-model quality evaluation
-- additional engine benchmarking
-- improved long-form production
-- better model lifecycle management
-- performance optimisation on Apple Silicon
-
----
-
-## 🧪 Experimental Status
-
-OmniVoice Mac is currently an experimental personal project.
-
-Some functionality—particularly local LoRA training and third-party model integration—may require specific dependency versions and may change as the underlying models evolve.
-
-It is not currently intended as a production-supported distribution.
-
----
-
-## 🙏 Credits
-
-OmniVoice Mac is built around the open-source **OmniVoice** project from **k2-fsa**.
-
-- [k2-fsa/OmniVoice](https://github.com/k2-fsa/OmniVoice)
-- [k2-fsa](https://github.com/k2-fsa)
-
-Additional local experimentation includes F5-TTS and Whisper.
-
-OmniVoice Mac is an independent native macOS project and is not an official k2-fsa application.
-
----
-
-## 📄 License
-
-This repository currently does not declare an independent license.
-
-Usage of OmniVoice and other included or integrated models remains subject to their respective licenses and terms.
-
----
-
-<p align="center">
-  <strong>OmniVoice Mac</strong><br>
-  Local voice creation on Apple Silicon.
-</p>
+The app source and icons are covered by [MIT](LICENSE). Dependencies/models keep their own licences; see [credits and third-party terms](THIRD_PARTY.md). Use only voices and recordings you are authorized to use.

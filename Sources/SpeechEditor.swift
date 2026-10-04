@@ -133,7 +133,7 @@ struct SpeechPreview: View {
                     Label(issue.message, systemImage: issue.level == "error" ? "xmark.octagon" : "exclamationmark.triangle")
                         .font(.caption).foregroundStyle(issue.level == "error" ? .red : .orange)
                 }
-                DisclosureGroup(performance ? "Speech segments and app-inserted pauses" : "What OmniVoice receives") {
+                DisclosureGroup(performance ? "Speech segments and app-inserted pauses" : "What the OmniVoice model receives") {
                     Text(result.text.isEmpty ? "No speech preview available." : result.text)
                         .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                     Text("Target text after pronunciation processing and native whitespace normalization. Events and phonemes stay intact; audio timing and reference conditioning are not shown.")

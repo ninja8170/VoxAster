@@ -45,3 +45,28 @@ tokens/
 .env
 .env.*
 !.env.example
+
+# Local tools, editor state, private recordings and release scratch files
+.denden.json
+.idea/
+.vscode/
+*.xcuserstate
+*.xcuserdatad/
+*.swp
+*.tmp
+*.flac
+*.aiff
+*.aif
+*.ogg
+voices/
+performance/
+*.pem
+*.key
+*.p12
+*.pfx
+.aws/
+
+# Private Git recovery material and diagnostic archives
+*.bundle
+*-private-git-backup*/
+.git-private/

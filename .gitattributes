@@ -1,0 +1,4 @@
+# Preserve byte-for-byte upstream licence copies; their original formatting
+# includes trailing whitespace and mixed indentation. Other files retain checks.
+Licenses/BOSON-HIGGS-AUDIO-2.txt whitespace=-blank-at-eol,-space-before-tab
+Licenses/META-LLAMA-3.txt whitespace=-blank-at-eol,-space-before-tab

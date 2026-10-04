@@ -17,16 +17,25 @@ extension Phase1Tests {
         try file.write(from: buffer)
     }
     static func reliabilityTests() throws {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent("omnivoice-p0-swift-" + UUID().uuidString)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("voxaster-p0-swift-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let source = root.appendingPathComponent("source.wav"), destination = root.appendingPathComponent("destination.wav")
         try wave(source); try Data("previous destination".utf8).write(to: destination)
+        let dropModel = AppModel(startServices: false, storageRoot: root.appendingPathComponent("drop-test"))
+        let fileDropProvider = NSItemProvider(object: source as NSURL)
+        check(dropModel.acceptDroppedAudio([fileDropProvider]), "file URL drop accepted")
+        let validDropDeadline = Date().addingTimeInterval(5)
+        while dropModel.referenceURL == nil && Date() < validDropDeadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+        check(dropModel.referenceURL == source, "dropped file is selected through the modern item-provider API")
+        check(!dropModel.acceptDroppedAudio([]), "empty audio drop rejected")
         let original = try Data(contentsOf: source), previous = try Data(contentsOf: destination)
         func intact() throws {
             try verify(try Data(contentsOf: source) == original, "export preserves source")
             try verify(try Data(contentsOf: destination) == previous, "failed export preserves existing destination")
-            try verify(try FileManager.default.contentsOfDirectory(atPath: root.path).allSatisfy { !$0.hasPrefix(".omnivoice-export-") }, "export staging cleaned")
+            try verify(try FileManager.default.contentsOfDirectory(atPath: root.path).allSatisfy { !$0.hasPrefix(".voxaster-export-") }, "export staging cleaned")
         }
         expectFailure("same source/destination") { try SafeFiles.export(source, to: source) }
         let canonical = root.appendingPathComponent("sub/../source.wav")

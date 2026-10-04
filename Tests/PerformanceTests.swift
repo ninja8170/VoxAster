@@ -52,7 +52,7 @@ extension Phase1Tests {
         CaptureProtocol.routedStatus["/performance/prepare"] = 404
         model.errorMessage = nil
         model.preparePerformance(); waitPerformance(model)
-        check(model.errorMessage?.contains("older OmniVoice app/backend") == true,
+        check(model.errorMessage?.contains("older app/backend") == true,
               "old-backend 404 becomes actionable Performance API error")
         CaptureProtocol.routedStatus.removeValue(forKey:"/performance/prepare")
         model.preparePerformance(); waitPerformance(model)

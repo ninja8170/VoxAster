@@ -13,7 +13,7 @@ from generation import GenerationRequest, OMNI_CAPABILITIES
 from omnivoice.models.omnivoice import VoiceClonePrompt
 from performance_script import compile_script, parse_script
 from performance_audio import SAMPLE_RATE, prepare_audio, assemble
-from provenance import MANIFEST
+from provenance import MANIFEST, compatible_production_runtime
 
 ENGINE = 'OmniVoice Zero-Shot'
 PERFORMANCE_CAPABILITIES = dict(engines=[ENGINE], directions=['pause', 'louder', 'quieter'],
@@ -137,7 +137,7 @@ class ProductionStore:
                 raise ValueError('Select a speech segment to render or retry.')
             if model is None:
                 raise ValueError('OmniVoice model is not ready.')
-            if job['runtime'] != MANIFEST or segment['voice']['engine'] != ENGINE:
+            if not compatible_production_runtime(job['runtime']) or segment['voice']['engine'] != ENGINE:
                 raise ValueError('Production runtime or engine differs from the current verified runtime.')
             reference = job['voice']['reference_path']
             if digest(reference) != job['voice']['reference_sha256']:

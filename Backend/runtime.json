@@ -3,5 +3,15 @@
   "model_id": "k2-fsa/OmniVoice",
   "model_revision": "c5fdb5ccb189668d56333f77ba2629f4cd7535f4",
   "expected_package_version": "0.2.1",
-  "expected_package_commit": "08be0b4ccbac3e13e374e86fbfead4b4cac343e2"
+  "expected_package_commit": "08be0b4ccbac3e13e374e86fbfead4b4cac343e2",
+  "audio_tokenizer": {
+    "repo_id": "bosonai/higgs-audio-v2-tokenizer",
+    "revision": "815a03f1b57dcb5ae918db415f22cd0c8a6f0f54",
+    "sha256": {
+      "config.json": "eefb20806f7104e77c9a5277c9df0f9bb8826b08eb1d4e8ab2b9829b6ef9fac1",
+      "preprocessor_config.json": "ae61eea88558608ee2fa86d2aec9fce8d99a5ff75d09cb7651ccce21ae1d9084",
+      "model.safetensors": "fe7c5e8785e0a05833e1bfc3e002ec7f55af21e306b2e7154a448c1f54ccfb0d",
+      "LICENSE": "8b2e018eeb3967a4636ccc57528440b33c14dd6e02ad67571fc7759489dde9a0"
+    }
+  }
 }
