@@ -1,22 +1,42 @@
-<p align="center">
-  <img src="Assets/icon_256x256.png" width="88" height="88" alt="VoxAster waveform icon">
-</p>
+[![VoxAster — Local AI Voice Studio for macOS. Give voice its own space. Authentic Voice Design interface surrounded by silver acoustic filaments.](docs/art/hero.jpg)](docs/art/hero.jpg)
 
-# VoxAster
+Design a voice, work from a reference, and shape longer performances in a native macOS workspace.
 
-**Local AI Voice Studio for macOS**
+**Apple Silicon · macOS 14+ · Local processing**
 
-VoxAster is a native macOS studio for local AI voice generation, cloning and long-form voice production. Design a speaker, shape pronunciation, compare takes and build a finished performance with deliberate pauses and segment loudness controls.
+[Get started](#get-started) · [Inside the studio](#inside-the-studio) · [Capabilities](#what-you-can-make) · [Privacy](#local-processing-and-privacy) · [Model licences](#models-and-licensing)
 
-**Apple Silicon · macOS 14+ · Version 3.7.0**
+> **Source-only · 3.7.0.** Build locally; no official app download is provided. [Release setup](#get-started) · [Managed setup on main](docs/RUNTIME_BOOTSTRAP.md) · [Model terms](#models-and-licensing). Models and dependencies are downloaded separately under their own licence terms.
 
-[Get started](#get-started) · [What you can make](#what-you-can-make) · [Screenshots](#inside-the-studio) · [Privacy](#local-processing-and-privacy) · [Model licences](#models-and-licensing)
+## Inside the studio
 
-> **Build from source:** there is currently no official downloadable `.app` or installer. The [3.7.0 release](https://github.com/ninja8170/VoxAster/releases/tag/v3.7.0) contains source code. Required models and dependencies are downloaded separately and have their own licence terms.
+Real workspaces. Synthetic demo material. Each plate links to its original, full-resolution screenshot.
 
-![VoxAster Voice Design with supported voice attributes and local generation controls](docs/images/voice-design.png)
+### Design
 
-*Voice Design: choose supported speaker attributes and start without a reference recording.*
+[![Design — Find a voice. The actual Voice Design workspace, with silver filaments gathering into a controlled form.](docs/art/design.jpg)](docs/images/voice-design.png)
+
+Choose supported speaker attributes and start without a reference recording.
+
+### Clone
+
+[![Clone — A familiar voice. A new story. The actual Voice Clone workspace alongside two converging silver forms.](docs/art/clone.jpg)](docs/images/voice-clone.png)
+
+Import a reference, supply its transcript and shape the next take with pronunciation and generation controls.
+
+### Long Form
+
+[![Long Form — Give the story room. The actual editable production chunks beneath a continuous silver signal.](docs/art/long-form.jpg)](docs/images/long-form.png)
+
+Edit production chunks individually and retry the section that needs another take.
+
+### Performance
+
+[![Performance — Make space for the pause. The actual production workspace with two separated sound sculptures and a 500 ms silence motif.](docs/art/performance.jpg)](docs/images/performance.png)
+
+Prepare speech segments with fixed settings, deliberate pauses and independent retries. This view shows a prepared production before rendering; rebuilding a master becomes available once its speech segments have audio. These controls change timing and audio loudness, not emotional acting.
+
+The interfaces are authentic VoxAster 3.7.0 captures; the surrounding silver forms are illustrative artwork, not measured audio or additional controls. No personal recordings or projects appear. [Screenshot provenance](docs/images/README.md) · [Art direction and composition notes](docs/art/README.md).
 
 ## What you can make
 
@@ -36,30 +56,6 @@ Start with a designed voice or a reference recording. Hear a few variants, keep 
 Generation runs on your Mac through the separate [OmniVoice](https://github.com/k2-fsa/OmniVoice) model. VoxAster brings its controls into a native SwiftUI workspace alongside playback, WAV export and production tools. It is an independent app, not an official k2-fsa product.
 
 Performance controls change **timing and audio loudness**, not emotional acting. Pause/Louder/Quieter buttons insert the app's supported directions; native vocal events are separate model-supported sounds. See [script controls and examples](docs/CONTROLS.md) for exact syntax and boundaries.
-
-## Inside the studio
-
-Screenshots show the real 3.7.0 app with demo scripts and a synthetic reference, not personal recordings or projects. Click an image to view it at full size.
-
-### Voice Clone
-
-Import a reference, supply its transcript and shape the next take with pronunciation and generation controls.
-
-![Voice Clone with a synthetic reference, script editor and generation controls](docs/images/voice-clone.png)
-
-### Long Form
-
-Edit production chunks individually and retry the section that needs another take.
-
-![Long Form editable production chunks and voiceover settings](docs/images/long-form.png)
-
-### Performance
-
-Prepare speech segments with fixed settings, deliberate pauses and independent retries. This view shows a prepared production before rendering; rebuilding a master becomes available once its speech segments have audio.
-
-![Performance directions and prepared segments, including an exact 500 millisecond pause](docs/images/performance.png)
-
-[Image provenance and capture details](docs/images/README.md).
 
 ## Local binary preparation
 
