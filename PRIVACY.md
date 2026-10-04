@@ -18,6 +18,7 @@ Setup contacts GitHub, PyPI and Hugging Face to install packages and download th
 | `~/Library/Logs/OmniVoice` | Backend output/errors; may include paths or request details |
 | System temporary directory | Microphone takes and transient reference uploads; failures/crashes can leave temporary files |
 | Hugging Face user cache | Downloaded model files; normally `~/.cache/huggingface` |
+| `~/Library/Application Support/OmniVoice/managed-runtime/v1` | Private runtime generations, verified downloads/models, optional caches, setup logs and installation manifests; repair does not remove projects/voices/drafts |
 | Process memory | Auto-play and Keep WAV switches reset to defaults on relaunch; they are not written to a preferences store |
 
 Saved data is not encrypted by this app. Use macOS account protections/FileVault as appropriate. References imported from other locations can remain linked to their original files. Exporting a WAV writes to the destination you choose. A history deletion can retain its WAV depending on the Keep WAV preference. Clearing history does not clear project/draft/Performance/training data.
@@ -27,3 +28,5 @@ Saved data is not encrypted by this app. Use macOS account protections/FileVault
 Quit VoxAster and confirm its backend has stopped; independently stop any legacy external training process before removing its data. Back up anything you need, then remove the particular subdirectories/files above in Finder. Removing the whole `~/Documents/OmniVoice-Mac` directory also removes environments and trained engines; do that only for a complete uninstall. Remove `~/Library/Application Support/OmniVoice` to remove projects/history/drafts and `~/Library/Logs/OmniVoice` to remove logs. Deleting the app bundle alone does not remove user data. Other programs may share the Hugging Face cache, so remove only model entries you no longer need. Inspect your chosen export locations and original reference folders separately.
 
 Do not attach real voice recordings, transcripts, private paths, drafts or complete logs to public bug reports. Reproduce with synthetic/non-sensitive inputs and redact locally first.
+
+The unpublished native setup downloads pinned artifacts directly from approved GitHub, PyPI file-host and Hugging Face/CDN hosts. It does not send recordings, scripts or projects to those hosts. Runtime repair replaces only managed generations and retains the previous runtime; it is separate from user-data removal. See [managed setup](docs/RUNTIME_BOOTSTRAP.md).

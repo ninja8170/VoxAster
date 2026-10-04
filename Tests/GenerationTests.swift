@@ -267,6 +267,7 @@ struct Phase1Tests {
         check(CaptureProtocol.captured.last?["text"] == "bass [laughter]" && CaptureProtocol.captured.last?["pronunciations"] == "bass=base" && CaptureProtocol.captured.last?["pronunciation_mode"] == "words", "preview forwards current text and rule mode")
         try performanceTests(model:model, output:output)
         try reliabilityTests()
+        try runtimeSetupTests()
         print("PASS: \(checks) Swift UI/request assertions across Clone, Design, Variants, Long Form, Retry, Engine Lab and Performance")
     }
 }

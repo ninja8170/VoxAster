@@ -2,6 +2,7 @@
 import hashlib
 import importlib.metadata
 import json
+import os
 from pathlib import Path
 import tempfile
 
@@ -35,7 +36,28 @@ def file_sha256(path):
     return digest.hexdigest()
 
 
+def managed_asset(kind):
+    root = os.environ.get('OMNIVOICE_MANAGED_ROOT')
+    if not root:
+        return None
+    base = Path(root)
+    lock = json.loads((Path(__file__).parent / 'bootstrap-lock.json').read_text())
+    if lock['pins'] != MANIFEST:
+        raise RuntimeError('Managed runtime pins differ from this app.')
+    selected = [a for a in lock['artifacts'] if a['kind'] == kind]
+    if not selected:
+        raise RuntimeError('Managed asset manifest is incomplete.')
+    for item in selected:
+        path = base / item['destination']
+        if file_sha256(path) != item['sha256']:
+            raise RuntimeError('Managed model files are missing or changed. Repair VoxAster Runtime.')
+    return (base / selected[0]['destination']).parent
+
+
 def resolve_base_model():
+    managed = managed_asset('model')
+    if managed is not None:
+        return managed
     from huggingface_hub import snapshot_download
     return Path(snapshot_download(MANIFEST['model_id'], revision=MANIFEST['model_revision'],
                                   ignore_patterns=['audio_tokenizer/*'], local_files_only=True))
@@ -44,6 +66,9 @@ def resolve_base_model():
 def resolve_audio_tokenizer():
     from huggingface_hub import snapshot_download
     spec = MANIFEST['audio_tokenizer']
+    managed = managed_asset('tokenizer')
+    if managed is not None:
+        return managed
     try:
         folder = Path(snapshot_download(spec['repo_id'], revision=spec['revision'], allow_patterns=list(spec['sha256']), local_files_only=True))
         if folder.name != spec['revision']:
@@ -97,6 +122,13 @@ def runtime_provenance(model_path):
     distribution = importlib.metadata.distribution('omnivoice')
     direct = json.loads(distribution.read_text('direct_url.json') or '{}')
     commit = direct.get('vcs_info', {}).get('commit_id', 'unknown')
+    if os.environ.get('OMNIVOICE_MANAGED_ROOT'):
+        lock = json.loads((Path(__file__).parent / 'bootstrap-lock.json').read_text())
+        source = next(a for a in lock['artifacts'] if a['kind'] == 'source')
+        archive_hash = direct.get('archive_info', {}).get('hashes', {}).get('sha256')
+        if archive_hash != source['sha256']:
+            raise RuntimeError('Installed OmniVoice archive differs from the pinned commit.')
+        commit = source['revision']
     official = resolve_audio_tokenizer()
     return {
         'native_app_version': MANIFEST['native_app_version'],

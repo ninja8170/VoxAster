@@ -12,7 +12,7 @@ for script in build.command install.command test.command setup-runtime.command v
   zsh -n "$HERE/$script"
 done
 "$HERE/build.command" "$TEST_BUILD/release"
-codesign --verify --deep --strict "$TEST_BUILD/release/VoxAster.app"
+if [[ "${VOXASTER_UNSIGNED:-0}" != "1" ]]; then codesign --verify --deep --strict "$TEST_BUILD/release/VoxAster.app"; fi
 APP="$TEST_BUILD/release/VoxAster.app"
 STATE_BEFORE="$TEST_BUILD/bundle-state-before.txt"
 STATE_AFTER="$TEST_BUILD/bundle-state-after.txt"
@@ -29,8 +29,8 @@ mkdir -p "$TEST_BUILD/bytecode-probe-data"
 test -z "$(find "$APP/Contents" \( -type d -name __pycache__ -o -type f -name '*.pyc' \) -print -quit)"
 find "$APP/Contents" -type f -exec shasum -a 256 {} \; | sort > "$STATE_AFTER"
 cmp "$STATE_BEFORE" "$STATE_AFTER"
-codesign --verify --deep --strict "$APP"
-echo "PASS: production Python launch configuration preserves the signed bundle"
+if [[ "${VOXASTER_UNSIGNED:-0}" != "1" ]]; then codesign --verify --deep --strict "$APP"; fi
+echo "PASS: production Python launch configuration preserves bundle contents"
 "$OMNI_PYTHON" -B - "$HERE/Backend/runtime.json" "$TEST_BUILD/release/VoxAster.app" <<'PY'
 import json,plistlib,sys
 from pathlib import Path
@@ -47,11 +47,15 @@ assert (app/'Contents/Resources/VoxAster.icns').is_file()
 assert info['CFBundleIdentifier'] == 'local.omnivoice.native'
 assert info['NSMicrophoneUsageDescription'].startswith('VoxAster ')
 assert not (app/'Contents/MacOS/OmniVoice').exists()
-for name in ['backend.py','generation.py','speech_text.py','performance_script.py','performance_audio.py','performance.py','provenance.py','runtime.json']:
+for name in ['backend.py','generation.py','speech_text.py','performance_script.py','performance_audio.py','performance.py','provenance.py','runtime.json','bootstrap.py','runtime_check.py','bootstrap-lock.json']:
  assert (app/'Contents/Resources'/name).read_bytes()==(Path(sys.argv[1]).parent/name).read_bytes()
 source=Path(sys.argv[1]).parent.parent
 for relative in ['LICENSE','THIRD_PARTY.md','PRIVACY.md','Notice','Licenses/BOSON-HIGGS-AUDIO-2.txt','Licenses/META-LLAMA-3.txt']:
  assert (app/'Contents/Resources'/relative).read_bytes()==(source/relative).read_bytes()
 assert not (app/'Contents/Resources/training_safety.py').exists()
-print('PASS: release bundle provenance, resources, licence notices and code signature')
+print('PASS: release bundle provenance, resources, licence notices (signature verification only in signed mode)')
 PY
+
+AUDIT_OPTIONS=()
+if [[ "${VOXASTER_UNSIGNED:-0}" == "1" ]]; then AUDIT_OPTIONS+=(--unsigned); fi
+"$OMNI_PYTHON" -B "$HERE/tools/audit-bundle.py" "$APP" "${AUDIT_OPTIONS[@]}" --inventory "$TEST_BUILD/bundle-inventory.json"

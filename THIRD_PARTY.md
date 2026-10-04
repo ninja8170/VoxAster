@@ -42,3 +42,15 @@ The tokenizer's source, exact artefact hashes, adapter and training removal are 
 ## Credits
 
 OmniVoice synthesis is by the k2-fsa contributors (Han Zhu and collaborators; Xiaomi copyright in code). Optional F5-TTS is by SWivid/Yushen Chen and collaborators. Whisper is by OpenAI. The macOS application is independent of these projects. No endorsement is implied.
+
+## Native-only binary inventory boundary (local preparation)
+
+The local binary audit inspects the built files, independently of package declarations. The current build contains one compiled original Swift executable, the original Python backend adapters, original icon, runtime configuration and the licence/privacy/notice documents. It contains no Python interpreter, Python packages, FFmpeg, native third-party libraries, model/tokenizer weights or fonts. SwiftUI/AppKit/AVFoundation and Swift runtime libraries are resolved from macOS system locations, not copied into the app. Compiler-inserted Swift support is covered by Swift's [Apache-2.0 runtime-library exception](https://github.com/swiftlang/swift/blob/main/LICENSE.txt); this is not clearance to redistribute an arbitrary toolchain.
+
+For this exact native-only payload, original code/icons may be redistributed under MIT with the included notice. The supplied Boson/Meta agreements and attribution remain included because they govern the separately obtained inference system. This finding does not clear bundling the external runtime, its native wheels, FFmpeg or weights, and does not remove any model-use restrictions above. A future runtime bootstrap or embedded-runtime design requires another concrete artifact/licence inventory before distribution.
+
+No official binary download exists yet. The signing, first-run and minimum-OS acceptance blockers are recorded in [binary distribution preparation](docs/BINARY_DISTRIBUTION.md). Source release `v3.7.0` remains unchanged.
+
+## Managed first-run installation (local, unpublished)
+
+The new first-run flow downloads the reviewed standalone interpreter, pinned wheels, FFmpeg executable and model files directly from their upstream distributors into private Application Support storage. No such binary/weight is bundled in the app. The [managed runtime catalogue](docs/RUNTIME_BOOTSTRAP.md) records every artifact, size, licence boundary and source; the bundled lock carries every SHA-256. In particular, imageio-ffmpeg's BSD wrapper does not change its included FFmpeg 7.1 executable's GPL-2.0-or-later licence. Existing model restrictions remain unchanged. This flow is not clearance to mirror or bundle the downloaded runtime.

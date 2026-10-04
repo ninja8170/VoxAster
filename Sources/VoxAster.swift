@@ -326,6 +326,8 @@ final class AppModel: ObservableObject {
     @Published var speed = 1.0 { didSet { draftChanged() } }
     @Published var steps = 32.0 { didSet { draftChanged() } }
     @Published var guidance = 2.0 { didSet { draftChanged() } }
+    let runtimeSetup = RuntimeSetupController()
+    @Published var runtimeSelection: RuntimeSelection?
     @Published var runtimeProvenance: [String: String] = [:]
     @Published var generationSeed = 0 { didSet { draftChanged() } }
     @Published var denoiseOutput = true { didSet { draftChanged() } }
@@ -488,8 +490,15 @@ final class AppModel: ObservableObject {
         }
         guard startServices else { return }
         createDirectories()
-        startBackend()
-        pollHealth()
+        runtimeSetup.beforeInstall = { [weak self] in self?.stopBackend() }
+        runtimeSetup.onReady = { [weak self] selection in
+            guard let self else { return }
+            self.runtimeSelection = selection
+            self.startBackend()
+            self.pollHealth()
+        }
+        status = "Checking runtime"
+        runtimeSetup.inspect(legacy: documentsRoot.appendingPathComponent(".venv/bin/python"))
     }
 
     deinit {
@@ -521,6 +530,7 @@ final class AppModel: ObservableObject {
     }
 
     func stopBackend() {
+        runtimeSetup.cancel()
         guard let process = backend, process.isRunning else { return }
         process.terminate()
         process.waitUntilExit()
@@ -531,7 +541,7 @@ final class AppModel: ObservableObject {
     func startBackend() {
         let fm = FileManager.default
         let home = fm.homeDirectoryForCurrentUser.path
-        let python = "\(home)/Documents/OmniVoice-Mac/.venv/bin/python"
+        let python = runtimeSelection?.python.path ?? "\(home)/Documents/OmniVoice-Mac/.venv/bin/python"
 
         guard let resources = Bundle.main.resourcePath else {
             status = "App resources unavailable"
@@ -541,7 +551,7 @@ final class AppModel: ObservableObject {
 
         guard fm.fileExists(atPath: python), fm.fileExists(atPath: server) else {
             status = "Runtime setup required"
-            errorMessage = "Run setup-runtime.command from the source checkout, then reopen VoxAster. See README.md for requirements."
+            runtimeSetup.presented = true
             return
         }
 
@@ -549,7 +559,7 @@ final class AppModel: ObservableObject {
         p.executableURL = URL(fileURLWithPath: python)
         p.arguments = PythonBackendLaunch.arguments(server: server)
 
-        var env = PythonBackendLaunch.environment(from: ProcessInfo.processInfo.environment)
+        var env = runtimeSelection.map { runtimeSetup.environment(selection: $0) } ?? PythonBackendLaunch.environment(from: ProcessInfo.processInfo.environment)
 
         // Finder/LaunchServices apps do not reliably inherit the shell PATH.
         // Always expose Homebrew/system tools such as ffmpeg to the Python backend.
@@ -565,7 +575,7 @@ final class AppModel: ObservableObject {
         let existingPath = env["PATH"] ?? ""
         let existingParts = existingPath.split(separator: ":").map(String.init)
         let mergedPath = requiredPaths + existingParts.filter { !requiredPaths.contains($0) }
-        env["PATH"] = mergedPath.joined(separator: ":")
+        if runtimeSelection?.managed == nil { env["PATH"] = mergedPath.joined(separator: ":") }
 
         p.environment = env
 
@@ -1551,6 +1561,7 @@ struct ContentView: View {
                 endPoint: .bottomTrailing
             )
         )
+        .background(RuntimeSetupPresentation(setup: model.runtimeSetup))
         .safeAreaInset(edge: .bottom) { Text(model.draftStatus).font(.caption2).padding(4).frame(maxWidth: .infinity).background(OVTheme.bgBottom) }
         .alert("VoxAster", isPresented: Binding(
             get: { model.errorMessage != nil },
@@ -1612,7 +1623,7 @@ struct Sidebar: View {
                 HStack {
                     Label("Apple Silicon", systemImage: "cpu").font(.caption.weight(.medium))
                     Spacer()
-                    StatusPill(text: model.modelReady ? "Ready" : "Loading", ready: model.modelReady)
+                    StatusPill(text: model.modelReady ? "Ready" : (model.runtimeSelection == nil ? "Setup / checking" : "Loading"), ready: model.modelReady)
                 }
                 Text("Local inference • MPS accelerated").font(.caption2).foregroundStyle(.tertiary)
             }
@@ -3035,6 +3046,16 @@ struct SettingsWorkspace: View {
                 VStack(spacing: 14) {
                     Card {
                         VStack(alignment: .leading, spacing: 12) {
+                            Label("Local voice runtime", systemImage: "externaldrive").font(.headline)
+                            Text("Setup and repair affect only the managed runtime. Voices, projects, drafts and existing environments are preserved.")
+                            Button("Set Up / Repair VoxAster Runtime") {
+                                model.runtimeSetup.repair = model.runtimeSelection?.managed != nil
+                                model.runtimeSetup.presented = true
+                            }
+                        }
+                    }
+                    Card {
+                        VStack(alignment: .leading, spacing: 12) {
                             Label("Credits and licences", systemImage: "doc.text")
                                 .font(.headline)
                             Text("VoxAster original code: MIT. OmniVoice code: Apache-2.0. OmniVoice weights: separate non-commercial terms.")
@@ -3085,7 +3106,7 @@ struct SettingsWorkspace: View {
                                 .font(.headline)
 
                             SettingsStatusRow(label: "Device", value: "Apple Silicon / MPS", ready: model.modelReady)
-                            SettingsStatusRow(label: "OmniVoice model", value: model.modelReady ? "Ready" : "Loading", ready: model.modelReady)
+                            SettingsStatusRow(label: "OmniVoice model", value: model.modelReady ? "Ready" : (model.runtimeSelection == nil ? "Setup / checking" : "Loading"), ready: model.modelReady)
                             SettingsStatusRow(label: "F5-TTS", value: model.f5Available ? "Ready" : "Unavailable", ready: model.f5Available)
 
                             Divider().opacity(0.2)

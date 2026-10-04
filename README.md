@@ -61,6 +61,10 @@ Prepare speech segments with fixed settings, deliberate pauses and independent r
 
 [Image provenance and capture details](docs/images/README.md).
 
+## Local binary preparation
+
+An unpublished native first-run setup is under validation. It installs a private pinned runtime/models without requiring users to install developer tools. See the [managed runtime design and artifact catalogue](docs/RUNTIME_BOOTSTRAP.md). No official binary download is available; the published source release and instructions below remain unchanged.
+
 ## Get started
 
 ### Requirements
