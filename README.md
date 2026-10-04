@@ -59,7 +59,13 @@ Performance controls change **timing and audio loudness**, not emotional acting.
 
 ## Local binary preparation
 
-An unpublished native first-run setup is under validation. It installs a private pinned runtime/models without requiring users to install developer tools. See the [managed runtime design and artifact catalogue](docs/RUNTIME_BOOTSTRAP.md). No official binary download is available; the published source release and instructions below remain unchanged.
+### Managed setup on `main`
+
+Current `main` includes a validated managed first-run setup that installs the pinned runtime and models. After VoxAster itself has been built from source, this setup does not require users to separately install Homebrew, Python, Git, FFmpeg or Xcode.
+
+VoxAster remains source-only: users must build the app themselves, and no official downloadable app or signed/notarized binary is provided. The official `v3.7.0` release remains unchanged and uses its original release setup instructions below.
+
+See the [managed runtime design and artifact catalogue](docs/RUNTIME_BOOTSTRAP.md).
 
 ## Get started
 
