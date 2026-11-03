@@ -1,12 +1,12 @@
-# Build and use VoxAster 3.7.0
+# Build and use VoxAster 3.8.0
 
 VoxAster's public release is **source-only**. There is no official downloadable `.app` or installer. The original app code/icons are MIT licensed; models and dependencies have their own terms. Start with the [README quick start](../README.md#get-started) and [third-party licences](../THIRD_PARTY.md).
 
 ## Choose your source
 
-The README commands check out the immutable `v3.7.0` release tag. Git may describe this as a detached HEAD; that is expected when building a tagged release. Contributors should use a working branch for changes.
+The README commands check out the immutable `v3.8.0` release tag. Git may describe this as a detached HEAD; that is expected when building a tagged release. Contributors should use a working branch for changes.
 
-Alternatively, download **Source code (zip)** from the [3.7.0 release](https://github.com/ninja8170/VoxAster/releases/tag/v3.7.0), extract it and open Terminal in the extracted folder. After installing the documented prerequisites, run:
+Alternatively, download **Source code (zip)** for the [v3.8.0 tag](https://github.com/ninja8170/VoxAster/archive/refs/tags/v3.8.0.zip), extract it and open Terminal in the extracted folder. After installing the documented prerequisites, run:
 
 ```sh
 ./setup-runtime.command
@@ -40,15 +40,15 @@ open .build/VoxAster.app
 
 The legacy runtime/data names are intentional. Existing projects, references, drafts and preferences continue to use the same storage. Do not rename or delete those directories as part of installing VoxAster. See [storage and privacy](../PRIVACY.md) and [branding compatibility](BRANDING.md).
 
-Core setup downloads the exact base model/text tokenizer snapshot and the separately pinned official Boson audio tokenizer declared in [runtime.json](../Backend/runtime.json). Normal base-model startup resolves the local cache. Missing reference transcripts can trigger a separate Whisper download; supplying a transcript avoids that step.
+Core setup downloads the exact base model/text tokenizer snapshot and the separately pinned official Boson audio tokenizer declared in [runtime.json](../Backend/runtime.json). Normal base-model startup resolves the local cache. Missing reference transcripts, the Reference Cleaner and Take Doctor use Whisper, which is downloaded separately the first time it is needed.
 
 ## First session
 
-1. Wait for **Ready**. Settings lists the app, package and model/tokenizer provenance.
-2. Try **Voice Design** with supported attributes, or import a short, clean reference in **Voice Clone**. The Clone UI recommends a 3–10 second reference; provide the matching transcript when available.
-3. Enter plain speech text, generate and listen. Use the output controls to export a WAV, or compare variants for another take.
-4. For longer material, edit **Long Form** production chunks. In **Performance**, insert Pause/Louder/Quieter directions, prepare a production, render its speech segments and rebuild the master. A segment retry retains other successful segments; rebuilding uses retained audio without synthesis.
-5. Save references in Library and organize work in Projects. Recoverable drafts preserve editable text/settings, not unsaved output takes; Performance productions keep their audio separately.
+1. Wait for **Engine ready** under the window title. **Settings (⌘,) → Engine** lists the app, package and model/tokenizer provenance.
+2. Choose a mode in the toolbar. **Voice Design**: pick attributes or a preset in the inspector's Voice tab. **Voice Clone**: drop a short, clean reference (5–20 s) onto the voice plate. For a long clip, press **Find the Best 12 Seconds** in the inspector to trim and transcribe it. Leave **Words in the clip** blank unless you know the exact words.
+3. Write the script on the page, or press **Use this example**, then press **⌘G**. Each take appears under the page with its waveform; Take Doctor scores it and underlines any word to check. Set **Takes** to 2–4 in the Render tab to compare variants.
+4. For longer material, switch to **Long Form** and edit or retry individual segments. In **Performance**, insert Pause/Louder/Quieter directions, prepare a production, render its speech segments and rebuild the master. A segment retry retains other successful segments; rebuilding uses retained audio without synthesis. For dialogue, use **Cast** and give every `NAME:` a voice.
+5. Save references with **Save as Voice…** and browse Takes, Voices and Productions in the sidebar Library. Projects keep their own outputs. Recoverable drafts preserve editable text/settings, not unsaved output takes; Performance productions keep their audio separately.
 
 Quit with **Command-Q**. Closing a window is not the same as quitting the app. Only one VoxAster or legacy app backend can use port 8011 at a time.
 

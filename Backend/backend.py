@@ -1,20 +1,26 @@
 import os
+import re
 import json
+import hashlib
 import tempfile
+from collections import OrderedDict
 import uuid
+import threading
 import traceback
 from pathlib import Path
 
+from typing import Optional
 from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.exceptions import RequestValidationError
+from starlette.concurrency import run_in_threadpool
 import uvicorn
 import torch
 import soundfile as sf
 
 from omnivoice import OmniVoice, OmniVoiceGenerationConfig
 
-from generation import inspect_speech, GenerationRequest, generation_form, apply_pronunciations, OMNI_CAPABILITIES, F5_CAPABILITIES
+from generation import inspect_speech, GenerationRequest, generation_form, apply_pronunciations, clone_reference_text, OMNI_CAPABILITIES, F5_CAPABILITIES
 from provenance import MANIFEST, resolve_base_model, runtime_provenance, load_inference_model
 
 app = FastAPI(docs_url=None, redoc_url=None)
@@ -90,13 +96,53 @@ def generate_omni(model, request, prompt=None, text=None, index=0):
     return model.generate(**kwargs)
 
 
-async def reference_prompt(model, request, upload):
+# Model inference must never run on the asyncio event loop: doing so blocks
+# every other request (including /health) until synthesis finishes. Run it in a
+# worker thread, one job at a time, because the MPS model is not re-entrant.
+GPU_LOCK = threading.Lock()
+
+async def on_gpu(work):
+    def locked():
+        with GPU_LOCK:
+            return work()
+    return await run_in_threadpool(locked)
+
+
+async def saved_reference(upload):
     suffix = Path(upload.filename or "reference.wav").suffix or ".wav"
-    with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
-        tmp.write(await upload.read())
-        tmp.flush()
-        return model.create_voice_clone_prompt(ref_audio=tmp.name,
-            ref_text=request.ref_text.strip() or None)
+    data = await upload.read()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(data)
+        return tmp.name
+
+
+def discard(path):
+    try:
+        os.unlink(path)
+    except Exception:
+        pass
+
+
+# Preparing a voice prompt (and auto-transcribing it) is the slow part of a
+# clone; Cast and repeat takes reuse the same few voices, so keep a small cache
+# for the resident model only.
+PROMPT_CACHE = OrderedDict()
+PROMPT_CACHE_SIZE = 6
+
+def clone_prompt(model, request, ref_path):
+    ref_text = clone_reference_text(ref_path, request.ref_text)
+    cacheable = model is MODEL and isinstance(model, OmniVoice)
+    if cacheable:
+        key = (hashlib.sha256(Path(ref_path).read_bytes()).hexdigest(), ref_text)
+        if key in PROMPT_CACHE:
+            PROMPT_CACHE.move_to_end(key)
+            return PROMPT_CACHE[key]
+    prompt = model.create_voice_clone_prompt(ref_audio=ref_path, ref_text=ref_text)
+    if cacheable:
+        PROMPT_CACHE[key] = prompt
+        while len(PROMPT_CACHE) > PROMPT_CACHE_SIZE:
+            PROMPT_CACHE.popitem(last=False)
+    return prompt
 
 
 @app.post("/analyze-reference")
@@ -292,13 +338,17 @@ async def preview_speech(text: str = Form(''), pronunciations: str = Form(''),
 @app.post("/generate-clone")
 async def generate_clone(request: GenerationRequest = Depends(generation_form),
                          ref_audio: UploadFile = File(...)):
-    prompt = await reference_prompt(MODEL, request, ref_audio)
-    return {"output": save_audio(generate_omni(MODEL, request, prompt))}
+    ref_path = await saved_reference(ref_audio)
+    try:
+        return await on_gpu(lambda: {"output": save_audio(
+            generate_omni(MODEL, request, clone_prompt(MODEL, request, ref_path)))})
+    finally:
+        discard(ref_path)
 
 
 @app.post("/generate-design")
 async def generate_design(request: GenerationRequest = Depends(generation_form)):
-    return {"output": save_audio(generate_omni(MODEL, request))}
+    return await on_gpu(lambda: {"output": save_audio(generate_omni(MODEL, request))})
 
 
 def split_script(text, max_chars=420):
@@ -326,12 +376,19 @@ async def generate_long(request: GenerationRequest = Depends(generation_form),
     if request.retry_index is not None and request.retry_index >= len(chunks):
         raise HTTPException(422, "Retry segment index is out of range.")
     indices = [request.retry_index] if request.retry_index is not None else list(range(len(chunks)))
-    prompt = await reference_prompt(MODEL, request, ref_audio)
-    pieces, outputs = [], []
-    for index in indices:
-        audio = generate_omni(MODEL, request, prompt, text=chunks[index], index=index)
-        outputs.append(save_audio(audio))
-        pieces.append(np.asarray(audio[0], dtype=np.float32))
+    ref_path = await saved_reference(ref_audio)
+    try:
+        def work():
+            prompt = clone_prompt(MODEL, request, ref_path)
+            pieces, outputs = [], []
+            for index in indices:
+                audio = generate_omni(MODEL, request, prompt, text=chunks[index], index=index)
+                outputs.append(save_audio(audio))
+                pieces.append(np.asarray(audio[0], dtype=np.float32))
+            return pieces, outputs
+        pieces, outputs = await on_gpu(work)
+    finally:
+        discard(ref_path)
     if request.retry_index is not None:
         return {"output": outputs[0], "retry_index": request.retry_index, "segment_outputs": outputs}
     # Preserve the existing Long Form master join; no new assembly system.
@@ -348,9 +405,164 @@ async def generate_long(request: GenerationRequest = Depends(generation_form),
 @app.post("/generate-variants")
 async def generate_variants(request: GenerationRequest = Depends(generation_form),
                             ref_audio: UploadFile = File(...)):
-    prompt = await reference_prompt(MODEL, request, ref_audio)
-    return {"outputs": [save_audio(generate_omni(MODEL, request, prompt, index=i))
-                        for i in range(request.count)]}
+    ref_path = await saved_reference(ref_audio)
+    try:
+        def work():
+            prompt = clone_prompt(MODEL, request, ref_path)
+            return {"outputs": [save_audio(generate_omni(MODEL, request, prompt, index=i))
+                                for i in range(request.count)]}
+        return await on_gpu(work)
+    finally:
+        discard(ref_path)
+
+
+# ---------------------------------------------------------------------------
+# Studio tools: Reference Cleaner, Take Doctor, Cast assembly
+# ---------------------------------------------------------------------------
+import numpy as np
+from studio_tools import (best_reference_window, take_report, splice,
+                          mono as to_mono)
+
+def read_audio(path, fallback_sr=24000):
+    try:
+        audio, sr = sf.read(str(path), always_2d=False, dtype="float32")
+        return to_mono(audio), sr
+    except Exception:
+        from omnivoice.utils.audio import load_audio
+        return np.squeeze(load_audio(str(path), fallback_sr)).astype(np.float32), fallback_sr
+
+def output_file(path):
+    """Only VoxAster's own outputs may be read or spliced by these routes."""
+    resolved = Path(path).resolve()
+    if OUTPUT_DIR.resolve() not in resolved.parents or not resolved.is_file():
+        raise HTTPException(422, "Takes must be VoxAster output files.")
+    return resolved
+
+def asr_words(path):
+    """Complete transcript plus word timings (runs inside the GPU lock).
+
+    Whisper's word-timestamp decoding can stop after the first sentence, so the
+    text comes from a plain pass; timings are re-requested from where decoding
+    stopped, and any still-untimed words are merged in without times."""
+    if getattr(MODEL, "_asr_pipe", None) is None:
+        MODEL.load_asr_model()
+    from omnivoice.utils.audio import load_audio
+    from studio_tools import merge_untimed, WORD
+    pipe = MODEL._asr_pipe
+    wav = np.squeeze(load_audio(str(path), 16000)).astype(np.float32)
+    duration = len(wav) / 16000
+    long_audio = dict(chunk_length_s=30) if duration > 30 else {}
+    plain = pipe({"array": wav, "sampling_rate": 16000}, **long_audio).get("text", "").strip()
+    target = len(WORD.findall(plain))
+    timed, offset = [], 0.0
+    for _ in range(4):
+        segment = wav[int(offset * 16000):]
+        if len(segment) < int(0.3 * 16000):
+            break
+        result = pipe({"array": segment, "sampling_rate": 16000}, return_timestamps="word", **long_audio)
+        chunks = result.get("chunks", [])
+        if not chunks:
+            break
+        for chunk in chunks:
+            t0, t1 = chunk.get("timestamp") or (None, None)
+            t0 = float(t0 or 0.0); t1 = float(t1 if t1 is not None else t0)
+            timed.append((chunk.get("text", ""), offset + t0, offset + t1))
+        last = timed[-1][2]
+        if len(timed) >= target or last >= duration - 0.4 or last <= offset + 0.05:
+            break
+        offset = last
+    return plain, merge_untimed(plain, timed), wav
+
+@app.post("/reference/clean")
+async def reference_clean(ref_audio: UploadFile = File(...), target: float = Form(12.0)):
+    if not 6.0 <= target <= 15.0:
+        raise HTTPException(422, "Target length must be 6–15 seconds.")
+    ref_path = await saved_reference(ref_audio)
+    stem = re.sub(r"[^\w -]", "", Path(ref_audio.filename or "voice").stem).strip()[:40] or "voice"
+    try:
+        def work():
+            audio, sr = read_audio(ref_path)
+            window = best_reference_window(audio, sr, target=target)
+            clip = audio[int(window["start"] * sr):int(window["end"] * sr)]
+            folder = DATA_ROOT / "voices" / "cleaned"
+            folder.mkdir(parents=True, exist_ok=True)
+            out = folder / f"{stem} clean {uuid.uuid4().hex[:6]}.wav"
+            sf.write(str(out), clip, sr)
+            transcript, _, _ = asr_words(out)
+            return dict(window, output=str(out), transcript=transcript,
+                        source_duration=round(len(audio) / sr, 3))
+        return await on_gpu(work)
+    finally:
+        discard(ref_path)
+
+@app.post("/takes/check")
+async def takes_check(script: str = Form(...), paths: str = Form(...)):
+    try:
+        items = json.loads(paths)
+    except ValueError as exc:
+        raise HTTPException(422, "paths must be a JSON list.") from exc
+    if not isinstance(items, list) or not 1 <= len(items) <= 8 or not all(isinstance(i, str) for i in items):
+        raise HTTPException(422, "Send one to eight take paths.")
+    if not script.strip():
+        raise HTTPException(422, "The script is empty.")
+    files = [(item, output_file(item)) for item in items]
+
+    def work():
+        reports = {}
+        for key, path in files:
+            transcript, words, wav = asr_words(path)
+            report = take_report(script, words, wav, 16000)
+            report["transcript"] = transcript
+            reports[key] = report
+        return {"reports": reports}
+    return await on_gpu(work)
+
+@app.post("/takes/repair")
+async def takes_repair(request: GenerationRequest = Depends(generation_form),
+                       take_path: str = Form(...), start: float = Form(...), end: float = Form(...),
+                       ref_audio: Optional[UploadFile] = File(None)):
+    take = output_file(take_path)
+    if not (0 <= start <= end) or end - start > 120:  # start == end inserts a missing sentence
+        raise HTTPException(422, "Invalid repair range.")
+    ref_path = await saved_reference(ref_audio) if ref_audio is not None else None
+    try:
+        def work():
+            prompt = clone_prompt(MODEL, request, ref_path) if ref_path else None
+            fresh = np.asarray(generate_omni(MODEL, request, prompt)[0], dtype=np.float32)
+            audio, sr = read_audio(take)
+            if sr != 24000:
+                raise ValueError("Only VoxAster 24 kHz takes can be repaired.")
+            joined = splice(audio, fresh, sr, start, min(end, len(audio) / sr))
+            return {"output": save_audio([joined])}
+        return await on_gpu(work)
+    finally:
+        if ref_path:
+            discard(ref_path)
+
+@app.post("/cast/assemble")
+async def cast_assemble(paths: str = Form(...), gap_ms: int = Form(350)):
+    try:
+        items = json.loads(paths)
+    except ValueError as exc:
+        raise HTTPException(422, "paths must be a JSON list.") from exc
+    if not isinstance(items, list) or not 1 <= len(items) <= 400:
+        raise HTTPException(422, "Send 1–400 line files.")
+    if not 0 <= gap_ms <= 3000:
+        raise HTTPException(422, "Gap must be 0–3000 ms.")
+    files = [output_file(item) for item in items]
+
+    def work():
+        gap = np.zeros(int(24000 * gap_ms / 1000), dtype=np.float32)
+        joined = []
+        for index, path in enumerate(files):
+            audio, sr = read_audio(path)
+            if sr != 24000:
+                raise ValueError("Cast lines must be VoxAster 24 kHz takes.")
+            if index:
+                joined.append(gap)
+            joined.append(audio)
+        return {"output": save_audio([np.concatenate(joined)])}
+    return await run_in_threadpool(work)
 
 
 # Performance productions use a distinct, strict app-level route. No raw
@@ -401,7 +613,7 @@ async def performance_get(production_id: str):
 @app.post("/performance/{production_id}/render/{segment_id}")
 async def performance_render(production_id: str, segment_id: str):
     try:
-        return PERFORMANCE.render(production_id, segment_id, MODEL, generate_omni)
+        return await on_gpu(lambda: PERFORMANCE.render(production_id, segment_id, MODEL, generate_omni))
     except (ValueError, OSError) as exc:
         raise HTTPException(422, str(exc)) from exc
 
@@ -547,10 +759,7 @@ async def engine_lab_compare(
             output = OUTPUT_DIR / f"engine-lab-{uuid.uuid4().hex[:8]}.wav"
 
             if name == "OmniVoice Zero-Shot":
-                prompt = MODEL.create_voice_clone_prompt(
-                    ref_audio=ref_path,
-                    ref_text=(request.ref_text.strip() or None),
-                )
+                prompt = clone_prompt(MODEL, request, ref_path)
                 audio = generate_omni(MODEL, request, prompt)
                 sf.write(str(output), audio[0], 24000)
                 return str(output)
@@ -564,10 +773,7 @@ async def engine_lab_compare(
                     device_map="mps" if torch.backends.mps.is_available() else "cpu",
                     dtype=torch.float32,
                 )
-                prompt = trained_model.create_voice_clone_prompt(
-                    ref_audio=ref_path,
-                    ref_text=(request.ref_text.strip() or None),
-                )
+                prompt = clone_prompt(trained_model, request, ref_path)
                 audio = generate_omni(trained_model, request, prompt)
                 sf.write(str(output), audio[0], 24000)
                 return str(output)
@@ -578,8 +784,8 @@ async def engine_lab_compare(
 
             raise RuntimeError(f"Unsupported engine: {name}")
 
-        first = generate_engine(engine_a)
-        second = generate_engine(engine_b)
+        first = await on_gpu(lambda: generate_engine(engine_a))
+        second = await on_gpu(lambda: generate_engine(engine_b))
 
         pair = [(engine_a, first), (engine_b, second)]
         random.SystemRandom().shuffle(pair)
@@ -618,7 +824,7 @@ PERSONAL_MERGED = PERSONAL_MERGED_EARLY
 @app.post("/personal/merge")
 @app.post("/personal/save-engine")
 def training_removed():
-    raise HTTPException(410, "Training, dataset preparation and model improvement are not available in VoxAster 3.7.0. Existing data was preserved.")
+    raise HTTPException(410, "Training, dataset preparation and model improvement are not available in VoxAster 3.8.0. Existing data was preserved.")
 
 @app.get("/personal/model-status")
 def personal_model_status():
@@ -652,20 +858,19 @@ async def personal_generate(
         try:
             # Load the merged model for this benchmark request. This is slower
             # than a persistent cache but isolates it from the zero-shot engine.
-            import torch
-            from omnivoice import OmniVoice
-            device = "mps" if torch.backends.mps.is_available() else "cpu"
-            dtype = torch.float32
-            personal_model = load_inference_model(
-                str(PERSONAL_MERGED),
-                device_map=device,
-                dtype=dtype,
-            )
-            result = personal_model.generate(
-                text=text.strip(),
-                ref_audio=ref_path,
-                ref_text=(ref_text.strip() or None),
-            )
+            def work():
+                device = "mps" if torch.backends.mps.is_available() else "cpu"
+                personal_model = load_inference_model(
+                    str(PERSONAL_MERGED),
+                    device_map=device,
+                    dtype=torch.float32,
+                )
+                return personal_model.generate(
+                    text=text.strip(),
+                    ref_audio=ref_path,
+                    ref_text=clone_reference_text(ref_path, ref_text),
+                )
+            result = await on_gpu(work)
             out = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
             out.close()
             sf.write(out.name, result[0], 24000)

@@ -1,4 +1,4 @@
-# Script controls in 3.7.0
+# Script controls in 3.8.0
 
 Native events (exact lowercase): `[laughter]`, `[sigh]`, `[confirmation-en]`, `[question-en]`, `[question-ah]`, `[question-oh]`, `[question-ei]`, `[question-yi]`, `[surprise-ah]`, `[surprise-oh]`, `[surprise-wa]`, `[surprise-yo]`, `[dissatisfaction-hnn]`.
 

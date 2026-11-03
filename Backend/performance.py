@@ -112,8 +112,10 @@ class ProductionStore:
             if digest(cached['path']) != cached['sha256']:
                 raise ValueError('The retained reference prompt has changed.')
             return VoiceClonePrompt.load(cached['path'])
-        prompt = model.create_voice_clone_prompt(ref_audio=job['voice']['reference_path'],
-            ref_text=job['voice']['ref_text'].strip() or None, preprocess_prompt=True)
+        from generation import clone_reference_text
+        reference = job['voice']['reference_path']
+        prompt = model.create_voice_clone_prompt(ref_audio=reference,
+            ref_text=clone_reference_text(reference, job['voice']['ref_text']), preprocess_prompt=True)
         # Auto-transcribed reference markup is subject to the same strict boundary.
         parse_script(prompt.ref_text)
         path = self.folder(job['id']) / 'reference-prompt.pt'

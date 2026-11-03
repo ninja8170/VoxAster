@@ -14,6 +14,30 @@ OMNI_CAPABILITIES = {
 }
 F5_CAPABILITIES = {'controls': ['speed'], 'native_markup': False, 'voice_design': False}
 
+# OmniVoice only trims long references (to <=15 s) when no transcript is given,
+# because a supplied transcript would no longer match trimmed audio. Feeding a
+# multi-minute reference into every prompt makes generation take many minutes
+# on MPS (the app appears frozen), so long references always use auto-trim and
+# auto-transcription of the trimmed clip instead.
+LONG_REFERENCE_SECONDS = 20.0
+
+
+def reference_seconds(path):
+    try:
+        import soundfile as sf
+        return float(sf.info(str(path)).duration)
+    except Exception:
+        return None
+
+
+def clone_reference_text(path, ref_text):
+    text = (ref_text or '').strip() or None
+    seconds = reference_seconds(path)
+    if text and seconds is not None and seconds > LONG_REFERENCE_SECONDS:
+        print(f"Reference is {seconds:.0f}s long; ignoring its transcript so it can be trimmed.", flush=True)
+        return None
+    return text
+
 
 class GenerationRequest(BaseModel):
     model_config = ConfigDict(extra='forbid', frozen=True)

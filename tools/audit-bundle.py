@@ -11,7 +11,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 BACKEND = ('backend.py', 'generation.py', 'speech_text.py', 'performance.py',
            'performance_audio.py', 'performance_script.py', 'provenance.py', 'runtime.json',
-           'bootstrap.py', 'runtime_check.py', 'bootstrap-lock.json')
+           'bootstrap.py', 'runtime_check.py', 'bootstrap-lock.json', 'studio_tools.py')
 NOTICES = ('LICENSE', 'THIRD_PARTY.md', 'PRIVACY.md', 'Notice',
            'Licenses/BOSON-HIGGS-AUDIO-2.txt', 'Licenses/META-LLAMA-3.txt')
 ENTITLEMENTS = {'com.apple.security.device.audio-input': True}

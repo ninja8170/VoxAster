@@ -18,7 +18,15 @@ LEGACY_AUDIO_HASHES = {
 }
 
 
+# App releases whose Performance assembly code is unchanged from this one. Their
+# frozen productions stay renderable after an app-only version bump; any other
+# app version, or any model/package/tokenizer change, is still rejected.
+ASSEMBLY_COMPATIBLE_APP_VERSIONS = {'3.7.0'}
+
+
 def compatible_production_runtime(recorded):
+    if recorded.get('native_app_version') in ASSEMBLY_COMPATIBLE_APP_VERSIONS:
+        recorded = dict(recorded, native_app_version=MANIFEST['native_app_version'])
     if recorded == MANIFEST:
         return True
     core = {key: value for key, value in MANIFEST.items() if key != 'audio_tokenizer'}

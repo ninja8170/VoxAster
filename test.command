@@ -24,7 +24,7 @@ mkdir -p "$TEST_BUILD/bytecode-probe-data"
   OMNIVOICE_DATA_ROOT="$TEST_BUILD/bytecode-probe-data" \
   PYTHONPATH="$APP/Contents/Resources" \
   PYTHONDONTWRITEBYTECODE=1 \
-  "$OMNI_PYTHON" -B -c 'import backend, generation, performance, performance_audio, performance_script, provenance, speech_text'
+  "$OMNI_PYTHON" -B -c 'import backend, generation, performance, performance_audio, performance_script, provenance, speech_text, studio_tools'
 )
 test -z "$(find "$APP/Contents" \( -type d -name __pycache__ -o -type f -name '*.pyc' \) -print -quit)"
 find "$APP/Contents" -type f -exec shasum -a 256 {} \; | sort > "$STATE_AFTER"
@@ -47,7 +47,7 @@ assert (app/'Contents/Resources/VoxAster.icns').is_file()
 assert info['CFBundleIdentifier'] == 'local.omnivoice.native'
 assert info['NSMicrophoneUsageDescription'].startswith('VoxAster ')
 assert not (app/'Contents/MacOS/OmniVoice').exists()
-for name in ['backend.py','generation.py','speech_text.py','performance_script.py','performance_audio.py','performance.py','provenance.py','runtime.json','bootstrap.py','runtime_check.py','bootstrap-lock.json']:
+for name in ['backend.py','generation.py','speech_text.py','performance_script.py','performance_audio.py','performance.py','provenance.py','runtime.json','bootstrap.py','runtime_check.py','bootstrap-lock.json','studio_tools.py']:
  assert (app/'Contents/Resources'/name).read_bytes()==(Path(sys.argv[1]).parent/name).read_bytes()
 source=Path(sys.argv[1]).parent.parent
 for relative in ['LICENSE','THIRD_PARTY.md','PRIVACY.md','Notice','Licenses/BOSON-HIGGS-AUDIO-2.txt','Licenses/META-LLAMA-3.txt']:

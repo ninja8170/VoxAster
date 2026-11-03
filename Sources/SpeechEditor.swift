@@ -61,17 +61,58 @@ enum SpeechInsertion {
 struct CursorTextEditor: NSViewRepresentable {
     @Binding var text: String
     @Binding var selection: NSRange
+    var font: NSFont = .systemFont(ofSize: 14)
+    var lineSpacing: CGFloat = 0
+    var inset = NSSize(width: 8, height: 8)
+    /// Fixed line height draws ruled "notebook" paper; 0 keeps natural lines.
+    var ruledLineHeight: CGFloat = 0
+    /// Character ranges to underline (Take Doctor); display only, never part of the text.
+    var marks: [NSRange] = []
     func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    private var paragraph: NSParagraphStyle {
+        let paragraph = NSMutableParagraphStyle()
+        if ruledLineHeight > 0 {
+            paragraph.minimumLineHeight = ruledLineHeight
+            paragraph.maximumLineHeight = ruledLineHeight
+        } else {
+            paragraph.lineSpacing = lineSpacing
+        }
+        return paragraph
+    }
+
     func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSTextView.scrollableTextView()
-        let view = scroll.documentView as! NSTextView
+        let scroll: NSScrollView
+        let view: NSTextView
+        if ruledLineHeight > 0 {
+            scroll = NSScrollView()
+            scroll.hasVerticalScroller = true
+            scroll.autohidesScrollers = true
+            let ruled = RuledTextView(frame: NSRect(origin: .zero, size: scroll.contentSize))
+            ruled.lineHeight = ruledLineHeight
+            ruled.minSize = NSSize(width: 0, height: scroll.contentSize.height)
+            ruled.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+            ruled.isVerticallyResizable = true
+            ruled.isHorizontallyResizable = false
+            ruled.autoresizingMask = [.width]
+            ruled.textContainer?.containerSize = NSSize(width: scroll.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
+            ruled.textContainer?.widthTracksTextView = true
+            scroll.documentView = ruled
+            view = ruled
+        } else {
+            scroll = NSTextView.scrollableTextView()
+            view = scroll.documentView as! NSTextView
+        }
         view.isRichText = false
         view.isAutomaticQuoteSubstitutionEnabled = false
         view.isAutomaticDashSubstitutionEnabled = false
         view.isAutomaticTextReplacementEnabled = false
-        view.font = .systemFont(ofSize: 14)
+        view.font = font
+        view.defaultParagraphStyle = paragraph
+        view.typingAttributes = [.font: font, .paragraphStyle: paragraph, .foregroundColor: NSColor.labelColor]
         view.drawsBackground = false
-        view.textContainerInset = NSSize(width: 8, height: 8)
+        view.textContainerInset = inset
+        scroll.drawsBackground = false
         view.delegate = context.coordinator
         view.allowsUndo = true
         view.setAccessibilityLabel("Speech script")
@@ -82,7 +123,23 @@ struct CursorTextEditor: NSViewRepresentable {
         context.coordinator.parent = self
         context.coordinator.updating = true
         defer { context.coordinator.updating = false }
-        if view.string != text { view.string = text }
+        if view.string != text {
+            view.string = text
+            if let storage = view.textStorage, storage.length > 0 {
+                storage.addAttributes([.font: font, .paragraphStyle: paragraph], range: NSRange(location: 0, length: storage.length))
+            }
+        }
+        if context.coordinator.marks != marks, let layout = view.layoutManager {
+            context.coordinator.marks = marks
+            let full = NSRange(location: 0, length: (view.string as NSString).length)
+            layout.removeTemporaryAttribute(.underlineStyle, forCharacterRange: full)
+            layout.removeTemporaryAttribute(.underlineColor, forCharacterRange: full)
+            let red = NSColor(name: nil) { $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(hex: 0xFF5B3F) : NSColor(hex: 0xD9301C) }
+            for range in marks where NSMaxRange(range) <= full.length {
+                layout.addTemporaryAttributes([.underlineStyle: NSUnderlineStyle.thick.rawValue | NSUnderlineStyle.patternDot.rawValue,
+                                               .underlineColor: red], forCharacterRange: range)
+            }
+        }
         let current = Range(selection, in: text) == nil ? NSRange(location: text.utf16.count, length: 0) : selection
         if view.selectedRange() != current {
             view.setSelectedRange(current)
@@ -98,6 +155,7 @@ struct CursorTextEditor: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: CursorTextEditor
         var updating = false
+        var marks: [NSRange] = []
         init(_ parent: CursorTextEditor) { self.parent = parent }
         func textDidChange(_ notification: Notification) {
             guard !updating, let view = notification.object as? NSTextView else { return }
@@ -111,143 +169,38 @@ struct CursorTextEditor: NSViewRepresentable {
     }
 }
 
+/// Text view on ruled paper: a faint rule under every line and a margin rule.
+final class RuledTextView: NSTextView {
+    var lineHeight: CGFloat = 28
+    override func drawBackground(in rect: NSRect) {
+        super.drawBackground(in: rect)
+        let rule = NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? NSColor(hex: 0x2F2E2A) : NSColor(hex: 0xE3DED2)
+        }
+        rule.setFill()
+        let top = textContainerInset.height
+        let bottomPadding: CGFloat = 6
+        var y = top + lineHeight - bottomPadding
+        let lastY = max(bounds.maxY, rect.maxY)
+        while y < lastY {
+            if y >= rect.minY - 1 { NSRect(x: rect.minX, y: y, width: rect.width, height: 1).fill() }
+            y += lineHeight
+        }
+        let margin = textContainerInset.width - 12
+        if margin > 0 {
+            NSColor(name: nil) { appearance in
+                appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                    ? NSColor(hex: 0x3A2A27) : NSColor(hex: 0xEBC9C0)
+            }.setFill()
+            NSRect(x: margin, y: rect.minY, width: 1, height: rect.height).fill()
+        }
+    }
+}
+
 struct SpeechInspection: Decodable {
     struct Issue: Decodable { let level: String; let message: String }
     let text: String
     let issues: [Issue]
     let can_generate: Bool
-}
-
-struct SpeechPreview: View {
-    @EnvironmentObject var model: AppModel
-    let text: String
-    let rules: String
-    let matchMode: String
-    var performance = false
-    @State private var result: SpeechInspection?
-    @State private var error: String?
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            if let result {
-                ForEach(Array(result.issues.enumerated()), id: \.offset) { _, issue in
-                    Label(issue.message, systemImage: issue.level == "error" ? "xmark.octagon" : "exclamationmark.triangle")
-                        .font(.caption).foregroundStyle(issue.level == "error" ? .red : .orange)
-                }
-                DisclosureGroup(performance ? "Speech segments and app-inserted pauses" : "What the OmniVoice model receives") {
-                    Text(result.text.isEmpty ? "No speech preview available." : result.text)
-                        .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                    Text("Target text after pronunciation processing and native whitespace normalization. Events and phonemes stay intact; audio timing and reference conditioning are not shown.")
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
-            } else if let error {
-                Text(error).font(.caption).foregroundStyle(.secondary)
-            }
-        }
-        .task(id: [text, rules, matchMode, String(performance)]) {
-            result = nil; error = nil
-            do {
-                try await Task.sleep(nanoseconds: 250_000_000)
-                let inspection = try await model.inspectSpeech(text: text, rules: rules, matchMode: matchMode, performance:performance)
-                try Task.checkCancellation()
-                result = inspection
-            } catch is CancellationError { }
-            catch { self.error = "Preview unavailable. Generation still validates the script before synthesis." }
-        }
-    }
-}
-
-struct SpeechEditor: View {
-    @Binding var text: String
-    var rules: String = ""
-    var matchMode: String = "words"
-    var nativeControls: Bool = true
-    var minimumHeight: CGFloat = 110
-    var performance = false
-    @State private var pauseMilliseconds = "500"
-    @State private var selection = NSRange(location: 0, length: 0)
-    @State private var phonemes = ""
-    @State private var pinyin = ""
-    private func insert(_ value: String) {
-        guard let result = SpeechInsertion.insert(value, into: text, selection: selection) else { return }
-        text = result.0; selection = result.1
-    }
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            CursorTextEditor(text: $text, selection: $selection)
-                .frame(height: minimumHeight).background(Color.black.opacity(0.18))
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-            if nativeControls {
-                Text("Native Events").font(.caption.bold())
-                HStack(spacing: 6) {
-                    ForEach(NativeEvent.all.filter { $0.group == "Event" }) { event in
-                        Button(event.label) { insert(event.token) }.help(event.token)
-                    }
-                    ForEach(["Question", "Surprise"], id: \.self) { group in
-                        Menu(group) {
-                            ForEach(NativeEvent.all.filter { $0.group == group }) { event in
-                                Button("\(event.label) — \(event.token)") { insert(event.token) }.help(event.token)
-                            }
-                        }
-                    }
-                }.controlSize(.small)
-                Text("Vocal events at the cursor, not persistent emotions. Native tags must use exact lowercase spelling.")
-                    .font(.caption2).foregroundStyle(.secondary)
-                DisclosureGroup("Native pronunciation") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Select a word to replace it. CMU uses uppercase symbols such as B EY1 S. Vowel stress 0/1/2 is pronunciation, not performance emphasis.").font(.caption)
-                        HStack {
-                            TextField("CMU phonemes: B EY1 S", text: $phonemes)
-                            Button("Insert phonemes") { if let token = NativePronunciation.cmuToken(phonemes) { insert(token) } }
-                                .disabled(NativePronunciation.cmuToken(phonemes) == nil)
-                        }
-                        if !phonemes.isEmpty && NativePronunciation.cmuToken(phonemes) == nil {
-                            Text("Use uppercase CMU symbols without brackets; vowels require stress 0, 1 or 2.").font(.caption).foregroundStyle(.orange)
-                        }
-                        Text("Chinese: uppercase pinyin syllable + tone 1–5, for example ZHE2. Check the preview for errors; the app does not translate words into phonemes.").font(.caption)
-                        HStack {
-                            TextField("Pinyin: ZHE2", text: $pinyin)
-                            Button("Insert pinyin") { if let value = NativePronunciation.pinyinValue(pinyin) { insert(value) } }
-                                .disabled(NativePronunciation.pinyinValue(pinyin) == nil)
-                        }
-                        if !pinyin.isEmpty && NativePronunciation.pinyinValue(pinyin) == nil {
-                            Text("Use uppercase pinyin with tone 1–5, separated by spaces. Spelling and the intended pronunciation must be checked by you.").font(.caption).foregroundStyle(.orange)
-                        }
-                    }
-                }
-            }
-            if performance {
-                VStack(alignment:.leading,spacing:6) {
-                    Text("Performance Directions • app-level").font(.caption.bold()).foregroundStyle(.purple)
-                    HStack {
-                        TextField("Milliseconds",text:$pauseMilliseconds).frame(width:85)
-                        Text("ms").font(.caption)
-                        Button("Pause") { if let token = PerformanceDirection.pauseInput(pauseMilliseconds) { insert(token) } }
-                            .disabled(PerformanceDirection.pauseInput(pauseMilliseconds) == nil).help("[pause Nms], integer 1–10000 ms")
-                        Button("Louder") { insert(PerformanceDirection.louder) }.help("[louder]: +3 dB on the following speech segment")
-                        Button("Quieter") { insert(PerformanceDirection.quieter) }.help("[quieter]: −3 dB on the following speech segment")
-                    }.controlSize(.small)
-                    if PerformanceDirection.pauseInput(pauseMilliseconds) == nil {
-                        Text("Pause requires an integer from 1 to 10000 ms.").font(.caption).foregroundStyle(.orange)
-                    }
-                    Text("Loudness applies to the following speech segment until the next performance direction. It does not mean shout or whisper. Pauses split independently synthesized speech.").font(.caption2)
-                }
-            }
-            SpeechPreview(text: text, rules: rules, matchMode: matchMode,performance:performance)
-        }
-    }
-}
-
-struct PronunciationRulesEditor: View {
-    @Binding var rules: String
-    @Binding var matchInsideWords: Bool
-    var body: some View {
-        DisclosureGroup("Pronunciation Dictionary / replacements") {
-            Text("One original=replacement rule per line. Use ordinary respelling, [B EY1 S] or uppercase pinyin tones. Native markup is protected; empty replacements do not delete text.")
-                .font(.caption)
-            TextEditor(text: $rules).font(.system(.caption, design: .monospaced)).frame(height: 80)
-            Toggle("Match inside words (legacy substring behavior)", isOn: $matchInsideWords).font(.caption)
-            Text("Default matches whole Latin words/phrases, case-sensitively. Chinese phrases match directly. Rules run in order; preview the result above.")
-                .font(.caption2).foregroundStyle(.secondary)
-        }
-    }
 }
