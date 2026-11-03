@@ -376,6 +376,7 @@ final class CastStore: ObservableObject {
     private var liveEdit = false
     private var masterIsEdit = false
     private var remixTask: Task<Void, Never>?
+    private var gapCommit: Task<Void, Never>?
     private var undoStack: [Snapshot] = [], redoStack: [Snapshot] = []
     private var baseline: Snapshot?
     @Published private(set) var canUndo = false
@@ -1413,6 +1414,45 @@ extension CastStore {
             if gap > 0 { shift += gap * (factor - 1) }
             clip.start = max(0, clip.start + shift)
             out.append(clip)
+        }
+        return out
+    }
+
+    /// The gap slider: changes the silence between lines and, once the scene is rendered, moves
+    /// the lines on the timeline to match (it used to do nothing until Reset Timeline, which also
+    /// threw away timeline edits). One undo step and one remix once the slider settles.
+    func setGap(_ ms: Double, _ model: AppModel) {
+        let delta = (ms - gapMs) / 1000
+        gapMs = ms
+        guard !clips.isEmpty, delta != 0, !busy else { return }
+        previewClips(Self.respaced(clips, by: delta))
+        gapCommit?.cancel()
+        gapCommit = Task {
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else { return }
+            commitEdit(model)
+        }
+    }
+
+    /// Widens or narrows every gap between consecutive units by `delta` seconds, keeping each
+    /// unit's internal timing and any edits. Interruptions and talk-overs keep their overlap,
+    /// and a gap never shrinks past zero into the line before.
+    nonisolated static func respaced(_ clips: [Clip], by delta: Double) -> [Clip] {
+        var out = clips
+        let units = Set(clips.map(\.unit)).sorted()
+        var total = 0.0, previousEnd: Double?, previousCut = false
+        for unit in units {
+            let members = out.indices.filter { out[$0].unit == unit }
+            guard let first = members.min(by: { out[$0].part < out[$1].part }),
+                  let last = members.max(by: { out[$0].part < out[$1].part }) else { continue }
+            if let previousEnd, !out[first].over, !previousCut {
+                let start = members.map { out[$0].start }.min() ?? out[first].start
+                let gapNow = start + total - previousEnd
+                total += max(delta, -max(0, gapNow))
+            }
+            for i in members { out[i].start = max(0, out[i].start + total) }
+            previousEnd = members.map { out[$0].end }.max()
+            previousCut = out[last].cut
         }
         return out
     }

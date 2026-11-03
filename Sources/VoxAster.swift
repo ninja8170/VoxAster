@@ -1092,8 +1092,16 @@ final class AppModel: ObservableObject {
             self?.isGenerating=false
             guard let data, let j = try? JSONSerialization.jsonObject(with:data) as? [String:Any] else { self?.errorMessage="Variant generation failed."; return }
             if let error = j["error"] as? String ?? j["detail"] as? String { self?.errorMessage=error; return }
-            guard let paths = j["outputs"] as? [String] else { self?.errorMessage="Variant generation failed."; return }
-            self?.variantURLs=paths.map{URL(fileURLWithPath:$0)}
+            guard let self, let paths = j["outputs"] as? [String] else { self?.errorMessage="Variant generation failed."; return }
+            // Every take goes into Takes (they used to vanish at the next generation unless exported).
+            let text = self.cloneText
+            for path in paths.reversed() {
+                let item = Generation(text: text, path: path, createdAt: Date(), mode: "Voice Clone")
+                self.generations.insert(item, at: 0)
+                self.registerGenerationWithActiveProject(item.id)
+            }
+            self.saveHistory()
+            self.variantURLs=paths.map{URL(fileURLWithPath:$0)}
         }}.resume()
     }
 

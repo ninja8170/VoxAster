@@ -29,6 +29,19 @@ extension Phase1Tests {
               "an empty segment is named by number")
         check(message(GenerationRequest(text: " ")).contains("Write something"), "empty script says so")
 
+        // The gap slider moves rendered lines.
+        func clip(_ unit: Int, _ part: Int, _ start: Double, _ length: Double, cut: Bool = false, over: Bool = false) -> CastStore.Clip {
+            CastStore.Clip(unit: unit, part: part, lane: "A", text: "", srcIn: 0, srcOut: length, start: start, cut: cut, over: over)
+        }
+        let spaced = CastStore.respaced([clip(0, 0, 0, 2), clip(1, 0, 2.5, 1), clip(2, 0, 4, 1)], by: 0.2).map(\.start)
+        check(spaced == [0, 2.7, 4.4], "a wider gap pushes each later line out by one more step")
+        let tight = CastStore.respaced([clip(0, 0, 0, 2), clip(1, 0, 2.1, 1)], by: -0.5).map(\.start)
+        check(abs(tight[1] - 2.0) < 1e-9, "a narrower gap stops at the end of the previous line")
+        let cutoff = CastStore.respaced([clip(0, 0, 0, 2, cut: true), clip(1, 0, 1.8, 1), clip(2, 0, 3.2, 1, over: true)], by: 0.3).map(\.start)
+        check(cutoff == [0, 1.8, 3.2], "interruptions and talk-overs keep their overlap")
+        let passage = CastStore.respaced([clip(0, 0, 0, 1), clip(0, 1, 1.2, 1), clip(1, 0, 2.6, 1)], by: 0.4).map(\.start)
+        check(passage == [0, 1.2, 3.0], "lines inside one Together passage keep their timing")
+
         // New / Open Scene asks before discarding unsaved work.
         let store = CastStore(file: FileManager.default.temporaryDirectory.appendingPathComponent("qa-cast-\(UUID()).json"),
                               scenesRoot: FileManager.default.temporaryDirectory.appendingPathComponent("qa-scenes-\(UUID())"))

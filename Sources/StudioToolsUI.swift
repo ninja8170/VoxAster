@@ -410,6 +410,7 @@ struct CastPanel: View {
 
 /// Voice tab while in Cast: the gap and how voices behave.
 struct CastInspector: View {
+    @EnvironmentObject var model: AppModel
     @EnvironmentObject var cast: CastStore
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -439,8 +440,10 @@ struct CastInspector: View {
                 }
             }
             Hairline()
-            ValueSlider(label: "Gap between lines (ms)", value: $cast.gapMs, range: 0...1500, format: "%.0f",
-                        help: "Silence inserted between consecutive lines in the joined scene")
+            ValueSlider(label: "Gap between lines (ms)",
+                        value: Binding(get: { cast.gapMs }, set: { cast.setGap($0, model) }),
+                        range: 0...1500, format: "%.0f",
+                        help: "Silence between consecutive lines. On a rendered scene it moves the lines and remixes; ⌘Z in the Scene Editor undoes it.")
             VStack(alignment: .leading, spacing: 6) {
                 Text("Room").font(.traceCaption).foregroundStyle(Trace.graphite)
                 // A menu, not segments: four segments were wider than the inspector's 360 pt maximum,

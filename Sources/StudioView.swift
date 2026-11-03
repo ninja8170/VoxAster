@@ -565,7 +565,11 @@ struct TakesRoll: View {
     private var allTakes: [AppModel.Generation] { model.generations.filter { $0.mode != "Long Form" } }
 
     var body: some View {
-        let takes = Array(allTakes.prefix(40))
+        // Takes shown in the comparison lanes above aren't listed again below them.
+        let every = allTakes
+        let comparing = model.voiceSource == .reference ? Set(model.variantURLs.map(\.path)) : []
+        let numbered = Array(every.enumerated().lazy.filter { !comparing.contains($0.element.path) }.prefix(40))
+        let takes = numbered.map(\.element)
         VStack(spacing: 0) {
             HStack {
                 SectionLabel("Takes", trailing: allTakes.isEmpty ? nil : "\(allTakes.count)")
@@ -590,8 +594,8 @@ struct TakesRoll: View {
                             VariantLanes().padding(.horizontal, 14).padding(.vertical, 10)
                             Hairline()
                         }
-                        ForEach(Array(takes.enumerated()), id: \.element.id) { index, item in
-                            TakeStrip(item: item, number: allTakes.count - index, current: item.url == model.outputURL)
+                        ForEach(numbered, id: \.element.id) { index, item in
+                            TakeStrip(item: item, number: every.count - index, current: item.url == model.outputURL)
                             Hairline()
                         }
                     }
