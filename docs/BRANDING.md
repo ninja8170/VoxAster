@@ -4,7 +4,7 @@ VoxAster is the application: **Local AI Voice Studio for macOS**. OmniVoice is t
 
 ## Product identity
 
-The build produces `VoxAster.app`, executable `VoxAster` and `VoxAster.icns`. The Swift app entry point is `VoxAsterApp` in `Sources/VoxAster.swift`. Window/menu/About names come from the VoxAster scene and bundle metadata. There is no Xcode project, scheme or Swift package to rename; scripts compile the Swift sources directly. App version is 3.8.0. Assets contain a waveform icon, not a text wordmark.
+The build produces `VoxAster.app`, executable `VoxAster` and `VoxAster.icns`. The Swift app entry point is `VoxAsterApp` in `Sources/VoxAster.swift`. Window/menu/About names come from the VoxAster scene and bundle metadata. There is no Xcode project, scheme or Swift package to rename; scripts compile the Swift sources directly. App version is 3.8.1. Assets contain a waveform icon, not a text wordmark.
 
 ## Preserved compatibility identifiers
 

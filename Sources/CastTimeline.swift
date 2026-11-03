@@ -19,7 +19,7 @@ struct CastTimeline: View {
     @State private var fitted = false
     @State private var guide: Double?             // snap guide line while dragging
 
-    static let rulerHeight: CGFloat = 26, panelWidth: CGFloat = 200, minLane: CGFloat = 96, maxLane: CGFloat = 220
+    static let rulerHeight: CGFloat = 26, panelWidth: CGFloat = 200, minLane: CGFloat = 96, maxLane: CGFloat = 480
     static let space = "castTimeline"
 
     var body: some View {

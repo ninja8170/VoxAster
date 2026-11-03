@@ -1,12 +1,12 @@
-# Build and use VoxAster 3.8.0
+# Build and use VoxAster 3.8.1
 
 VoxAster's public release is **source-only**. There is no official downloadable `.app` or installer. The original app code/icons are MIT licensed; models and dependencies have their own terms. Start with the [README quick start](../README.md#get-started) and [third-party licences](../THIRD_PARTY.md).
 
 ## Choose your source
 
-The README commands check out the immutable `v3.8.0` release tag. Git may describe this as a detached HEAD; that is expected when building a tagged release. Contributors should use a working branch for changes.
+The README commands check out the immutable `v3.8.1` release tag. Git may describe this as a detached HEAD; that is expected when building a tagged release. Contributors should use a working branch for changes.
 
-Alternatively, download **Source code (zip)** for the [v3.8.0 tag](https://github.com/ninja8170/VoxAster/archive/refs/tags/v3.8.0.zip), extract it and open Terminal in the extracted folder. After installing the documented prerequisites, run:
+Alternatively, download **Source code (zip)** for the [v3.8.1 tag](https://github.com/ninja8170/VoxAster/archive/refs/tags/v3.8.1.zip), extract it and open Terminal in the extracted folder. After installing the documented prerequisites, run:
 
 ```sh
 ./setup-runtime.command
@@ -37,6 +37,7 @@ open .build/VoxAster.app
 | `~/Documents/OmniVoice-Mac/.venv` | Per-user Python runtime used by the native app |
 | Hugging Face user cache, normally `~/.cache/huggingface/` | Separately downloaded model assets |
 | `.build/VoxAster.app` in the source checkout | Locally built, ad-hoc-signed app |
+| `~/Documents/OmniVoice-Mac/engines/moss` | Only if you run `setup-moss.command`: the optional Together engine's Python 3.13 environment and models |
 
 The legacy runtime/data names are intentional. Existing projects, references, drafts and preferences continue to use the same storage. Do not rename or delete those directories as part of installing VoxAster. See [storage and privacy](../PRIVACY.md) and [branding compatibility](BRANDING.md).
 
@@ -47,10 +48,21 @@ Core setup downloads the exact base model/text tokenizer snapshot and the separa
 1. Wait for **Engine ready** under the window title. **Settings (⌘,) → Engine** lists the app, package and model/tokenizer provenance.
 2. Choose a mode in the toolbar. **Voice Design**: pick attributes or a preset in the inspector's Voice tab. **Voice Clone**: drop a short, clean reference (5–20 s) onto the voice plate. For a long clip, press **Find the Best 12 Seconds** in the inspector to trim and transcribe it. Leave **Words in the clip** blank unless you know the exact words.
 3. Write the script on the page, or press **Use this example**, then press **⌘G**. Each take appears under the page with its waveform; Take Doctor scores it and underlines any word to check. Set **Takes** to 2–4 in the Render tab to compare variants.
-4. For longer material, switch to **Long Form** and edit or retry individual segments. In **Performance**, insert Pause/Louder/Quieter directions, prepare a production, render its speech segments and rebuild the master. A segment retry retains other successful segments; rebuilding uses retained audio without synthesis. For dialogue, use **Cast** and give every `NAME:` a voice.
-5. Save references with **Save as Voice…** and browse Takes, Voices and Productions in the sidebar Library. Projects keep their own outputs. Recoverable drafts preserve editable text/settings, not unsaved output takes; Performance productions keep their audio separately.
+4. For longer material, switch to **Long Form** and edit or retry individual segments. In **Performance**, insert Pause/Louder/Quieter directions, prepare a production, render its speech segments and rebuild the master. A segment retry retains other successful segments; rebuilding uses retained audio without synthesis. For dialogue, use **Cast**: give every `NAME:` a voice, choose a **Room**, render, then **Open Scene Editor** to arrange, trim and export the scene. End a line with `--` to have it cut off, or start one with `>>` to talk over the previous line.
+5. Save references with **Save as Voice…** and browse Takes, Voices, Productions and Scenes in the sidebar Library. Projects keep their own outputs. Recoverable drafts preserve editable text/settings, not unsaved output takes; Performance productions keep their audio separately.
 
 Quit with **Command-Q**. Closing a window is not the same as quitting the app. Only one VoxAster or legacy app backend can use port 8011 at a time.
+
+## Optional Together engine
+
+Cast can perform short passages of dialogue in one pass with MOSS-TTSD, so the voices react to each other. It is optional and runs in its own environment; VoxAster's runtime is not changed:
+
+```sh
+brew install python@3.13
+./setup-moss.command
+```
+
+The script creates a Python 3.13 environment under `~/Documents/OmniVoice-Mac/engines/moss`, installs `mlx-speech` and downloads the MOSS-TTSD and MOSS audio tokenizer MLX models (about 10 GB) at the revisions pinned in [moss.json](../Backend/moss.json). Choose **Engine › Together** in Cast's inspector afterwards. Each passage is up to six lines; every voice is first sampled by OmniVoice, and each passage is transcribed and rendered once more if words were misheard. To remove it, delete that folder.
 
 ## Optional per-user installation
 
@@ -95,6 +107,7 @@ Tests use temporary data and mocked synthesis where appropriate. Real model star
 | **Unexpected package/model** | Restore the validated runtime; do not change pins merely to bypass provenance checks. |
 | **Microphone access denied** | Check System Settings → Privacy & Security → Microphone. Imported references do not require microphone recording. |
 | **Markup is spoken or delivery is odd** | Use plain text and the editor's supported controls. Asterisks/Markdown are not acting direction. See [script controls](CONTROLS.md). |
+| **Together is unavailable** | Run `./setup-moss.command`; it needs Apple Silicon and `python3.13` (`brew install python@3.13`). The inspector shows what is missing. |
 | **A draft returns without an output take** | Drafts recover editable work, not unsaved takes. Back up user-data directories and retain/export audio you need. |
 
 Performance currently supports base OmniVoice reference cloning; Design/F5/saved-engine Performance routing is not enabled. `[deadpan]`, `[sarcastic]`, `[whisper]` and `[shout]` are not supported inline controls. Whisper is a Voice Design attribute. Speed and Guidance do not represent emotional intensity. Quality, accent and voice continuity require listening checks; a fixed seed is not a promise of identical audio across different hardware.

@@ -998,7 +998,7 @@ PERSONAL_MERGED = PERSONAL_MERGED_EARLY
 @app.post("/personal/merge")
 @app.post("/personal/save-engine")
 def training_removed():
-    raise HTTPException(410, "Training, dataset preparation and model improvement are not available in VoxAster 3.8.0. Existing data was preserved.")
+    raise HTTPException(410, "Training, dataset preparation and model improvement are not available in VoxAster 3.8.1. Existing data was preserved.")
 
 @app.get("/personal/model-status")
 def personal_model_status():

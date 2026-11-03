@@ -1,12 +1,17 @@
 # Changelog
 
-## Unreleased — Cast scenes and the Together engine
+## 3.8.1 — Cast scenes, the Scene Editor and the Together engine
 
-- Cast keeps going when a line fails: it tries the line once more, marks it with the reason, and renders the rest. **Retry Failed** (or **Render Remaining** after Stop) finishes the scene; a failed re-render never discards the previous good take. Rendered lines survive relaunch.
-- Scenes can be saved to the new **Library › Scenes**: script, voices, room and every rendered line are copied into their own folder, so deleting takes never breaks a scene. Open, rename, export, Save as New and New Scene.
-- **Room** (Dry, Booth, Room, Large room): evens out each voice's level and places the whole scene in one shared space with quiet room tone; **Join Again** applies a new room or gap without re-rendering. Room tone stays at or below -70 dBFS, since louder tone under the reverb made Whisper hear phantom words.
-- Optional **Engine › Together**: MOSS-TTSD performs up to six lines at a time as one exchange so voices react to each other. Each voice is first sampled cleanly by OmniVoice, each passage is checked with Whisper and re-rendered once if misheard. Installed separately with `setup-moss.command` (Python 3.13, ~10 GB).
-- Autoplay now plays the master shown in the Scene panel, so its trace follows playback.
+- **Scene Editor:** a full-window, Audacity-style multitrack timeline for Cast. One track per character with Mute, Solo and volume; every line is a clip you can move, trim, fade, re-level or re-render. Clips snap to each other and the playhead (hold ⌘ to turn off) and never stack on one track; re-rendering a line shifts later clips by its change in length. Undo/redo, keyboard editing, markers, loop playback, a Pace slider (70–140 % of every gap) and a playhead that pages along. The master is remixed shortly after each edit.
+- **Interruptions:** a line ending `--` is cut off (the next speaker overlaps its last 0.25 s and it fades out); a line starting `>>` talks over the previous one (0.8 s early, previous line 8 dB quieter). Both can be toggled per clip.
+- **Room** (Dry, Booth, Small room, Large room): matches speech levels (up to ±9 dB) and places every voice in one synthetic room with room tone at or below −70 dBFS. Louder tone under a reverb tail made Whisper hear words in the gaps.
+- **Together engine (optional):** MOSS-TTSD performs passages of up to six lines in one pass so voices react to each other. It runs in its own Python 3.13 / MLX worker installed by `setup-moss.command` (about 10 GB, pinned in `Backend/moss.json`), and every voice is first sampled cleanly by OmniVoice because MOSS needs clean speech to clone.
+- **Line checks:** every rendered line is transcribed with Whisper; misheard words are marked on the clip and listed in the selection bar. Double-click a clip to change its words; the script is updated and the line re-renders in place. **Check Lines** covers older scenes.
+- **Exports:** mix at original level or −16 / −14 / −23 LUFS (BS.1770 with a −1 dBFS limiter), one dry stem per character, and SRT or WebVTT subtitles labelled by speaker.
+- **Scenes in the Library:** save a scene with its script, voices, room, timeline and rendered lines in its own folder, so deleting takes never breaks it. Rendered lines survive relaunch.
+- **Reliability:** a failed line is retried once and the rest of the scene still renders; **Retry Failed** finishes it, and a failed re-render keeps the previous take. Autoplay plays the master the panel shows.
+- **Fix:** opening Cast could abort VoxAster ("more Update Constraints in Window passes than there are views") when the inspector's four-segment Room picker was wider than the inspector column. Room is now a menu, and the Scene Editor no longer imposes a minimum width.
+- Managed runtimes need **Set Up or Repair Runtime** once after updating; repair reuses the verified downloads. 3.8.0 Performance productions remain renderable.
 
 ## 3.8.0 — studio redesign and studio tools
 

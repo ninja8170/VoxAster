@@ -1,8 +1,8 @@
 # Product screenshots
 
-## VoxAster 3.8.0 (`3.8/`)
+## VoxAster 3.8 (`3.8/`)
 
-These images show the real native VoxAster 3.8.0 interface and are the ones used in the README.
+These images show the real native VoxAster 3.8 interface and are the ones used in the README. All except the Scene Editor were captured from 3.8.0.
 
 | Image | What it shows |
 |---|---|
@@ -14,12 +14,15 @@ These images show the real native VoxAster 3.8.0 interface and are the ones used
 | [3.8/performance.png](3.8/performance.png) | A prepared and rendered Performance production with an 800 ms pause (dark) |
 | [3.8/cast.png](3.8/cast.png) | A three-character Cast scene rendered and joined (dark) |
 | [3.8/library.png](3.8/library.png) | The Takes table in the Library (dark) |
+| [3.8/scene-editor.png](3.8/scene-editor.png) | 3.8.1 Scene Editor: three tracks, a cut-off line, a talk-over, a marker and a fade-out (dark) |
 
 ### Capture and privacy
 
 Captured from the 3.8.0 build launched with an isolated demo home (`CFFIXED_USER_HOME`) and data root, so the personal Library, History, voices, projects and drafts were never read. All four demo voices (Harbour Narrator, Mara, Tom, Studio Host) were invented with Voice Design using fixed seeds; none is a person's recording. Every take, Long Form master, Performance production and Cast scene shown was generated for real through the app from those voices. The scripts were written for these screenshots.
 
 Each window was captured on its own at 1440 × 900 without a shadow and saved as an optimized PNG. No UI was fabricated or retouched.
+
+The Scene Editor image (3.8.1) is the app's real `SceneEditor` view rendered offscreen at 1440 × 900 from the 3.8.1 source with an isolated, temporary scene. Its six lines were generated for real by the OmniVoice engine with Voice Design from invented descriptors (no reference recording) for three fictional characters, Narrator, Mara and Tom, and laid out by the app's own timeline code; the marker and fade were set through the same code paths the editor uses. Window chrome is not shown because the view was rendered without a window frame. Nothing was drawn or retouched.
 
 The banner composes, on a ruled-paper background, the unmodified light-mode Voice Clone window and the actual waveform of the synthetic "Mara" voice drawn as an ink line with a seconds ruler and a red stylus. It adds no text.
 

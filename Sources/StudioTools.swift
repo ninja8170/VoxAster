@@ -354,7 +354,7 @@ final class CastStore: ObservableObject {
     ]
 
     /// Shared acoustic spaces (keys match studio_tools.ROOMS).
-    static let rooms: [(id: String, name: String)] = [("dry", "Dry"), ("booth", "Booth"), ("room", "Room"), ("large", "Large room")]
+    static let rooms: [(id: String, name: String)] = [("dry", "Dry"), ("booth", "Booth"), ("room", "Small room"), ("large", "Large room")]
 
     @Published var script: String { didSet { save() } }
     @Published var assignments: [String: String] { didSet { save() } }
