@@ -22,23 +22,40 @@ struct GenerationRequest: Codable, Equatable {
     var segments: [String]? = nil
     var retryIndex: Int? = nil
 
-    enum RequestError: LocalizedError {
+    enum RequestError: LocalizedError, Equatable {
         case invalid
-        var errorDescription: String? { "Check speech text, production segments and generation settings." }
+        /// One named problem, so the alert says what to fix rather than "check your settings".
+        case problem(String)
+        var errorDescription: String? {
+            switch self {
+            case .invalid: return "Check speech text, production segments and generation settings."
+            case .problem(let message): return message
+            }
+        }
     }
 
+    /// Fails with a message naming the setting and its allowed range.
+    private func require(_ ok: Bool, _ message: @autoclosure () -> String) throws {
+        if !ok { throw RequestError.problem(message()) }
+    }
+
+    private func within(_ value: Double, _ range: ClosedRange<Double>) -> Bool { value.isFinite && range.contains(value) }
+
     func fields() throws -> [String: String] {
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              speed.isFinite, (0.5...1.5).contains(speed), (8...64).contains(steps),
-              guidance.isFinite, (0...4).contains(guidance), seed >= 0, seed <= Int.max - 4,
-              (2...4).contains(count) else { throw RequestError.invalid }
-        guard timeShift.isFinite, (0.001...1).contains(timeShift),
-              positionTemperature.isFinite, (0...20).contains(positionTemperature),
-              classTemperature.isFinite, (0...20).contains(classTemperature),
-              layerPenaltyFactor.isFinite, (0...20).contains(layerPenaltyFactor),
-              ["words", "substring"].contains(pronunciationMode) else { throw RequestError.invalid }
+        try require(!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "Write something to speak first.")
+        try require(within(speed, 0.5...1.5), "Speed must be between 0.5 and 1.5 (Render › Speed).")
+        try require((8...64).contains(steps), "Steps must be between 8 and 64 (Render › Steps).")
+        try require(within(guidance, 0...4), "Guidance must be between 0 and 4 (Render › Guidance).")
+        try require(seed >= 0 && seed <= Int.max - 4, "Seed must be 0 (random) or a positive whole number (Render › Advanced › Seed).")
+        try require((2...4).contains(count), "Takes must be between 2 and 4.")
+        try require(within(timeShift, 0.001...1), "Time shift must be between 0.001 and 1 (Render › Advanced).")
+        try require(within(positionTemperature, 0...20), "Position temperature must be between 0 and 20 (Render › Advanced).")
+        try require(within(classTemperature, 0...20), "Token temperature must be between 0 and 20 (Render › Advanced).")
+        try require(within(layerPenaltyFactor, 0...20), "Layer penalty must be between 0 and 20 (Render › Advanced).")
+        try require(["words", "substring"].contains(pronunciationMode), "Unknown pronunciation match mode.")
         if let duration {
-            guard duration.isFinite, duration > 0, duration <= 600 else { throw RequestError.invalid }
+            try require(duration.isFinite && duration > 0 && duration <= 600,
+                        "Fixed duration must be more than 0 and at most 600 seconds (Render › Advanced › Seconds).")
         }
         var result = ["text": text, "ref_text": refText, "pronunciations": pronunciations,
                       "language": language, "instruct": instruct, "speed": String(speed),
@@ -49,11 +66,16 @@ struct GenerationRequest: Codable, Equatable {
                       "pronunciation_mode": pronunciationMode]
         if let duration { result["duration"] = String(duration) }
         if let segments {
-            guard !segments.isEmpty, segments.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else { throw RequestError.invalid }
+            try require(!segments.isEmpty, "There are no segments to render.")
+            if let blank = segments.firstIndex(where: { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) {
+                throw RequestError.problem("Segment \(blank + 1) is empty. Write its text or press Split Script again.")
+            }
             result["segments"] = String(data: try JSONEncoder().encode(segments), encoding: .utf8)
         }
         if let retryIndex {
-            guard let segments, segments.indices.contains(retryIndex) else { throw RequestError.invalid }
+            guard let segments, segments.indices.contains(retryIndex) else {
+                throw RequestError.problem("That segment no longer exists. Press Split Script and try again.")
+            }
             result["retry_index"] = String(retryIndex)
         }
         return result

@@ -987,7 +987,9 @@ final class AppModel: ObservableObject {
             if checkReference, let identity = referenceIdentity, !referenceMatches(identity) {
                 throw ReliabilityError(message: "Reference audio changed or is missing. Select it again before generation; its previous transcript cannot be reused.")
             }
-            guard steps.isFinite, (8...64).contains(steps) else { throw GenerationRequest.RequestError.invalid }
+            guard steps.isFinite, (8...64).contains(steps) else {
+                throw GenerationRequest.RequestError.problem("Steps must be between 8 and 64 (Render › Steps).")
+            }
             return try GenerationRequest(text: text, refText: referenceText,
                 pronunciations: pronunciations, language: language, instruct: instruct,
                 speed: speed, steps: Int(steps), guidance: guidance,
@@ -1097,6 +1099,44 @@ final class AppModel: ObservableObject {
 
     func generateLongForm() { executeLongForm(retryIndex: nil) }
 
+    /// Every segment has audio, so a master can be joined without rendering anything.
+    var canRebuildLongForm: Bool {
+        !productionChunks.isEmpty && productionChunks.allSatisfy { $0.output != nil }
+    }
+
+    /// Joins the segments as they are into a new master. Retrying one segment used to need a
+    /// full render for a master, which re-rendered (and changed) every other segment too.
+    func rebuildLongFormMaster() {
+        guard canRebuildLongForm, modelReady, !isGenerating else { return }
+        let outputs = productionChunks.compactMap(\.output)
+        let sourceIDs = productionChunks.map(\.id)
+        let text = productionChunks.map(\.text).joined(separator: " ")
+        isGenerating = true
+        longFormProgress = 0.5
+        longFormStatus = "Joining \(outputs.count) segments…"
+        Task { @MainActor in
+            defer { isGenerating = false }
+            do {
+                let data = try await StudioAPI.post("long/join", fields: ["paths": StudioAPI.jsonList(outputs.map(\.path))], timeout: 300)
+                let path = try StudioAPI.outputPath(data)
+                guard productionChunks.map(\.id) == sourceIDs else {
+                    longFormStatus = "Segments changed while joining — Rebuild Master again"
+                    return
+                }
+                let url = URL(fileURLWithPath: path)
+                longFormOutputURL = url
+                outputURL = url
+                longFormProgress = 1
+                longFormStatus = "Complete • \(outputs.count) sections, master rebuilt"
+                recordTake(path: path, text: text, mode: "Long Form")
+                if autoPlay { outputPlayer.toggle(url) }
+            } catch {
+                longFormStatus = "Failed"
+                errorMessage = "Could not rebuild the master: \(error.localizedDescription)"
+            }
+        }
+    }
+
     private func executeLongForm(retryIndex: Int?) {
         guard modelReady, !isGenerating, let ref = referenceURL else { return }
         if productionChunks.isEmpty { prepareProductionChunks() }
@@ -1168,7 +1208,9 @@ final class AppModel: ObservableObject {
                 if let retryIndex {
                     self.productionChunks[retryIndex].output = url
                     self.productionChunks[retryIndex].state = "Complete"
-                    self.longFormStatus = "Section regenerated — generate master to include this edit"
+                    self.longFormStatus = self.canRebuildLongForm
+                        ? "Segment rendered again — Rebuild Master to include it"
+                        : "Segment rendered again"
                     self.outputURL = url
                     if self.autoPlay { self.outputPlayer.toggle(url) }
                     return

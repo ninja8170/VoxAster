@@ -391,15 +391,46 @@ async def generate_long(request: GenerationRequest = Depends(generation_form),
         discard(ref_path)
     if request.retry_index is not None:
         return {"output": outputs[0], "retry_index": request.retry_index, "segment_outputs": outputs}
-    # Preserve the existing Long Form master join; no new assembly system.
+    output = save_audio([join_long_form(pieces)])
+    return {"output": output, "chunks": len(chunks), "segment_outputs": outputs}
+
+
+def join_long_form(pieces):
+    """The Long Form master: segments in order with 0.18 s of silence between them."""
+    import numpy as np
     silence = np.zeros(int(24000 * 0.18), dtype=np.float32)
     joined = []
     for index, piece in enumerate(pieces):
         if index:
             joined.append(silence)
-        joined.append(piece)
-    output = save_audio([np.concatenate(joined)])
-    return {"output": output, "chunks": len(chunks), "segment_outputs": outputs}
+        joined.append(np.asarray(piece, dtype=np.float32))
+    return np.concatenate(joined)
+
+
+@app.post("/long/join")
+async def long_join(paths: str = Form(...)):
+    """Rebuilds a Long Form master from segments already rendered, so retrying one segment
+    no longer means rendering (and changing) every other segment again."""
+    try:
+        items = json.loads(paths)
+    except ValueError as exc:
+        raise HTTPException(422, "paths must be a JSON list.") from exc
+    if not isinstance(items, list) or not 1 <= len(items) <= 1000:
+        raise HTTPException(422, "Send 1–1000 segment files.")
+    files = [output_file(item) for item in items]
+
+    def work():
+        pieces = []
+        for path in files:
+            audio, sr = read_audio(path)
+            if sr != 24000:
+                raise ValueError("Long Form segments must be VoxAster 24 kHz takes.")
+            pieces.append(audio)
+        return {"output": save_audio([join_long_form(pieces)]), "chunks": len(pieces)}
+    try:
+        return await run_in_threadpool(work)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @app.post("/generate-variants")

@@ -72,6 +72,21 @@ class GenerationTests(unittest.TestCase):
         self.assert_settings(self.model.generate.call_args_list[1], segments[1])
         self.assertEqual([c.args[0] for c in self.seed.call_args_list], [123,124])
 
+    def test_long_join_rebuilds_master_from_existing_segments(self):
+        first = self.post('/generate-long', dict(self.data, segments=json.dumps(['One.', 'Two.']))).json()
+        calls = self.model.generate.call_count
+        response = self.client.post('/long/join', data={'paths': json.dumps(first['segment_outputs'])})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.model.generate.call_count, calls, 'joining renders nothing')
+        self.assertEqual(response.json()['chunks'], 2)
+        import soundfile as sf
+        audio, sr = sf.read(response.json()['output'])
+        self.assertEqual(len(audio), 24 + int(24000 * 0.18) + 24, 'segments joined with the Long Form gap')
+
+    def test_long_join_only_reads_voxaster_outputs(self):
+        response = self.client.post('/long/join', data={'paths': json.dumps(['/etc/hosts'])})
+        self.assertEqual(response.status_code, 422)
+
     def test_retry_generates_only_selected_edited_segment(self):
         response = self.post('/generate-long', dict(self.data, segments=json.dumps(['First', 'Edited bass.']), retry_index='1'))
         self.assertEqual(response.status_code, 200, response.text)

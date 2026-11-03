@@ -68,6 +68,9 @@ struct CursorTextEditor: NSViewRepresentable {
     var ruledLineHeight: CGFloat = 0
     /// Character ranges to underline (Take Doctor); display only, never part of the text.
     var marks: [NSRange] = []
+    /// Which text this editor shows (e.g. the mode's script). Replacing text within the same
+    /// document is undoable; switching to another document is not.
+    var document: String = ""
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     private var paragraph: NSParagraphStyle {
@@ -124,7 +127,17 @@ struct CursorTextEditor: NSViewRepresentable {
         context.coordinator.updating = true
         defer { context.coordinator.updating = false }
         if view.string != text {
-            view.string = text
+            let sameDocument = context.coordinator.document == document
+            context.coordinator.document = document
+            if sameDocument, let storage = view.textStorage,
+               view.shouldChangeText(in: NSRange(location: 0, length: storage.length), replacementString: text) {
+                // Through the text system, so ⌘Z takes back Clear Script, Paste Script, examples and
+                // inserted tokens (setting `string` directly could not be undone).
+                storage.replaceCharacters(in: NSRange(location: 0, length: storage.length), with: text)
+                view.didChangeText()
+            } else {
+                view.string = text
+            }
             if let storage = view.textStorage, storage.length > 0 {
                 storage.addAttributes([.font: font, .paragraphStyle: paragraph], range: NSRange(location: 0, length: storage.length))
             }
@@ -156,7 +169,8 @@ struct CursorTextEditor: NSViewRepresentable {
         var parent: CursorTextEditor
         var updating = false
         var marks: [NSRange] = []
-        init(_ parent: CursorTextEditor) { self.parent = parent }
+        var document: String
+        init(_ parent: CursorTextEditor) { self.parent = parent; document = parent.document }
         func textDidChange(_ notification: Notification) {
             guard !updating, let view = notification.object as? NSTextView else { return }
             parent.text = view.string

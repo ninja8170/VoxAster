@@ -67,7 +67,8 @@ struct ScriptSheet: View {
             Hairline()
             ZStack(alignment: .topLeading) {
                 CursorTextEditor(text: text, selection: $selection, font: Trace.scriptNSFont,
-                                 inset: NSSize(width: 44, height: 14), ruledLineHeight: 30, marks: marks)
+                                 inset: NSSize(width: 44, height: 14), ruledLineHeight: 30, marks: marks,
+                                 document: "\(model.scriptKey)")
                 if text.wrappedValue.isEmpty {
                     ScriptExample(mode: model.studioMode) { text.wrappedValue = $0 }
                         .padding(.leading, 49).padding(.top, 19).padding(.trailing, 28)
@@ -261,7 +262,8 @@ struct EventBar: View {
             }
             Spacer(minLength: 8)
             Menu {
-                Button("Paste Script") { if let s = NSPasteboard.general.string(forType: .string) { text = s } }
+                // Both are undoable with ⌘Z in the script.
+                Button("Replace with Clipboard") { if let s = NSPasteboard.general.string(forType: .string) { text = s } }
                 Button("Clear Script", role: .destructive) { text = "" }
             } label: { Image(systemName: "ellipsis.circle") }
             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
@@ -365,6 +367,13 @@ struct SegmentsPanel: View {
         VStack(spacing: 0) {
             HStack {
                 SectionLabel("Segments", trailing: model.productionChunks.isEmpty ? nil : "\(model.productionChunks.filter { $0.state == "Complete" }.count)/\(model.productionChunks.count) rendered")
+                if model.longFormOutputURL == nil && model.canRebuildLongForm {
+                    Button("Rebuild Master") { model.rebuildLongFormMaster() }
+                        .controlSize(.small)
+                        .buttonStyle(.borderedProminent).tint(Trace.cobaltFill)
+                        .disabled(model.isGenerating || !model.modelReady)
+                        .help("Join the segments as they are into a new master, without rendering any again")
+                }
                 Button("Split Script") { model.prepareProductionChunks() }
                     .controlSize(.small)
                     .disabled(model.longFormText.isEmpty || model.isGenerating)
