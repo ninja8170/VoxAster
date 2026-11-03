@@ -39,6 +39,15 @@ class StudioRouteTests(unittest.TestCase):
         audio, sr = sf.read(r.json()['output'])
         self.assertAlmostEqual(len(audio) / sr, 2.0, places=2)
 
+    def test_cast_assemble_room_adds_tail_and_rejects_unknown(self):
+        a, b = output(1.0), output(0.5)
+        r = self.client.post('/cast/assemble', data=dict(paths=json.dumps([a, b]), gap_ms='500', room='room'))
+        self.assertEqual(r.status_code, 200, r.text)
+        audio, sr = sf.read(r.json()['output'])
+        self.assertGreater(len(audio) / sr, 2.0)
+        bad = self.client.post('/cast/assemble', data=dict(paths=json.dumps([a]), room='cathedral'))
+        self.assertEqual(bad.status_code, 422)
+
     def test_routes_refuse_files_outside_outputs(self):
         outside = tempfile.NamedTemporaryFile(suffix='.wav', delete=False).name
         sf.write(outside, np.zeros(2400, dtype=np.float32), 24000)

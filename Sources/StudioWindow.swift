@@ -27,7 +27,7 @@ enum InspectorTab: String, CaseIterable, Identifiable {
 }
 
 enum Place: Hashable {
-    case studio, takes, voices, productions, project(UUID)
+    case studio, takes, voices, productions, scenes, project(UUID)
 }
 
 /// View state for the single studio window. The model's `selectedSection`
@@ -281,6 +281,7 @@ struct StudioRoot: View {
                 case .takes: TakesLibrary(items: model.generations, title: "Takes")
                 case .voices: VoicesLibrary()
                 case .productions: ProductionsLibrary()
+                case .scenes: ScenesLibrary()
                 case .project(let id): ProjectLibrary(projectID: id)
                 }
             }
@@ -329,6 +330,7 @@ struct StudioRoot: View {
 struct StudioSidebar: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var ui: StudioUI
+    @EnvironmentObject var cast: CastStore
     @State private var newProjectPending = false
 
     var body: some View {
@@ -339,6 +341,7 @@ struct StudioSidebar: View {
                 Label("Takes", systemImage: "clock").badge(model.generations.count).tag(Place.takes)
                 Label("Voices", systemImage: "person.wave.2").badge(model.savedVoices.count).tag(Place.voices)
                 Label("Productions", systemImage: "rectangle.split.3x1").badge(model.performanceHistory.count).tag(Place.productions)
+                Label("Scenes", systemImage: "person.2.wave.2").badge(cast.scenes.count).tag(Place.scenes)
             }
 
             Section("Voices") {

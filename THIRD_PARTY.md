@@ -54,3 +54,7 @@ No official binary download exists yet. The signing, first-run and minimum-OS ac
 ## Managed first-run installation (local, unpublished)
 
 The new first-run flow downloads the reviewed standalone interpreter, pinned wheels, FFmpeg executable and model files directly from their upstream distributors into private Application Support storage. No such binary/weight is bundled in the app. The [managed runtime catalogue](docs/RUNTIME_BOOTSTRAP.md) records every artifact, size, licence boundary and source; the bundled lock carries every SHA-256. In particular, imageio-ffmpeg's BSD wrapper does not change its included FFmpeg 7.1 executable's GPL-2.0-or-later licence. Existing model restrictions remain unchanged. This flow is not clearance to mirror or bundle the downloaded runtime.
+
+## Optional Cast "Together" engine (MOSS-TTSD, local, unpublished)
+
+`setup-moss.command` is run by the user and downloads, into `~/Documents/OmniVoice-Mac/engines/moss`, a separate Python 3.13 environment with [mlx-speech](https://pypi.org/project/mlx-speech/) 0.5.6 (MIT) and its dependencies, plus the int8 MLX conversions of OpenMOSS MOSS-TTSD v1.0 and the MOSS audio tokenizer (Apache-2.0) at the revisions pinned in `Backend/moss.json`. None of this is bundled in the app; the app only starts the worker if the user installed it. MOSS-TTSD is by the OpenMOSS team; the MLX conversion is by the mlx-speech authors. No endorsement is implied.

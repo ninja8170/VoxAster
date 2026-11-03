@@ -420,7 +420,7 @@ async def generate_variants(request: GenerationRequest = Depends(generation_form
 # Studio tools: Reference Cleaner, Take Doctor, Cast assembly
 # ---------------------------------------------------------------------------
 import numpy as np
-from studio_tools import (best_reference_window, take_report, splice,
+from studio_tools import (best_reference_window, take_report, splice, assemble_scene, ROOMS,
                           mono as to_mono)
 
 def read_audio(path, fallback_sr=24000):
@@ -540,7 +540,7 @@ async def takes_repair(request: GenerationRequest = Depends(generation_form),
             discard(ref_path)
 
 @app.post("/cast/assemble")
-async def cast_assemble(paths: str = Form(...), gap_ms: int = Form(350)):
+async def cast_assemble(paths: str = Form(...), gap_ms: int = Form(350), room: str = Form("dry")):
     try:
         items = json.loads(paths)
     except ValueError as exc:
@@ -549,20 +549,117 @@ async def cast_assemble(paths: str = Form(...), gap_ms: int = Form(350)):
         raise HTTPException(422, "Send 1–400 line files.")
     if not 0 <= gap_ms <= 3000:
         raise HTTPException(422, "Gap must be 0–3000 ms.")
+    if room not in ROOMS:
+        raise HTTPException(422, f"Unknown room. Choose one of: {', '.join(ROOMS)}.")
     files = [output_file(item) for item in items]
 
     def work():
-        gap = np.zeros(int(24000 * gap_ms / 1000), dtype=np.float32)
-        joined = []
-        for index, path in enumerate(files):
+        lines = []
+        for path in files:
             audio, sr = read_audio(path)
             if sr != 24000:
                 raise ValueError("Cast lines must be VoxAster 24 kHz takes.")
-            if index:
-                joined.append(gap)
-            joined.append(audio)
-        return {"output": save_audio([np.concatenate(joined)])}
+            lines.append(audio)
+        return {"output": save_audio([assemble_scene(lines, 24000, gap_ms, room)])}
     return await run_in_threadpool(work)
+
+
+# ---------------------------------------------------------------------------
+# Cast "Together" engine: MOSS-TTSD in its own worker process (moss_engine.py)
+# ---------------------------------------------------------------------------
+from moss_engine import MossEngine, MossUnavailable
+from studio_tools import moss_script, moss_token_budget
+
+MOSS = MossEngine(DATA_ROOT)
+MOSS_PASS_SCORE = 90
+
+
+@app.on_event("shutdown")
+def stop_moss():
+    MOSS.stop()
+
+
+@app.get("/cast/moss/status")
+async def cast_moss_status():
+    return MOSS.status()
+
+
+def moss_reference(path):
+    """The cleanest ~10 s of a voice at 24 kHz: long references slow MOSS and blur the voice."""
+    audio, sr = read_audio(path)
+    window = best_reference_window(audio, sr, target=10.0, max_len=12.0)
+    clip = audio[int(window["start"] * sr):int(window["end"] * sr)]
+    if sr != 24000:
+        import librosa
+        clip = librosa.resample(clip, orig_sr=sr, target_sr=24000)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+        sf.write(tmp.name, clip.astype(np.float32), 24000)
+        return tmp.name
+
+
+@app.post("/cast/moss")
+async def cast_moss(lines: str = Form(...), seed: int = Form(0), check: bool = Form(True),
+                    ref_1: Optional[UploadFile] = File(None), ref_2: Optional[UploadFile] = File(None),
+                    ref_3: Optional[UploadFile] = File(None), ref_4: Optional[UploadFile] = File(None),
+                    ref_5: Optional[UploadFile] = File(None)):
+    """Renders one passage of dialogue in a single MOSS-TTSD pass. ref_N is the voice of the
+    N-th speaker to appear. The take is transcribed and re-rendered once if it was misheard."""
+    try:
+        items = json.loads(lines)
+    except ValueError as exc:
+        raise HTTPException(422, "lines must be a JSON list.") from exc
+    if not isinstance(items, list) or not 1 <= len(items) <= 12 or not all(isinstance(i, dict) for i in items):
+        raise HTTPException(422, "Send one to twelve lines.")
+    try:
+        text, order = moss_script(items)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    uploads = [ref_1, ref_2, ref_3, ref_4, ref_5][:len(order)]
+    if any(upload is None for upload in uploads):
+        raise HTTPException(422, "Every speaker in the passage needs a reference voice.")
+    status = MOSS.status()
+    if not status["available"]:
+        raise HTTPException(422, status["reason"])
+    saved = [await saved_reference(upload) for upload in uploads]
+    prepared = []
+    try:
+        def work():
+            prompts = {}
+            for number, path in enumerate(saved, 1):
+                prepared.append(moss_reference(path))
+                prompts[number] = prepared[-1]
+            script = " ".join(" ".join(str(i["text"]).split()) for i in items)
+            best = None
+            for attempt in range(2 if check else 1):
+                out = OUTPUT_DIR / f"voxaster-{uuid.uuid4().hex[:8]}.wav"
+                reply = MOSS.render(text, prompts, out, seed + attempt * 7919, moss_token_budget(text))
+                result = dict(output=str(out), score=100, transcript="", attempts=attempt + 1,
+                              stop_reached=bool(reply.get("stop_reached", True)),
+                              duration=round(float(reply.get("duration", 0.0)), 3), speakers=order)
+                if check:
+                    transcript, words, wav = asr_words(out)
+                    report = take_report(script, words, wav, 16000)
+                    result.update(score=int(report["score"]), transcript=transcript)
+                if not result["stop_reached"]:
+                    result["score"] = min(result["score"], 50)  # ran out of budget: the end is cut off
+                if best is None or result["score"] > best["score"]:
+                    if best is not None:
+                        Path(best["output"]).unlink(missing_ok=True)
+                    best = result
+                else:
+                    out.unlink(missing_ok=True)
+                best["attempts"] = attempt + 1
+                if best["score"] >= MOSS_PASS_SCORE:
+                    break
+            return best
+        return await on_gpu(work)
+    except MossUnavailable as exc:
+        raise HTTPException(422, str(exc)) from exc
+    finally:
+        for path in saved:
+            discard(path)
+        for path in prepared:
+            Path(path).unlink(missing_ok=True)
 
 
 # Performance productions use a distinct, strict app-level route. No raw

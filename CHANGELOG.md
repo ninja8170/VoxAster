@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — Cast scenes and the Together engine
+
+- Cast keeps going when a line fails: it tries the line once more, marks it with the reason, and renders the rest. **Retry Failed** (or **Render Remaining** after Stop) finishes the scene; a failed re-render never discards the previous good take. Rendered lines survive relaunch.
+- Scenes can be saved to the new **Library › Scenes**: script, voices, room and every rendered line are copied into their own folder, so deleting takes never breaks a scene. Open, rename, export, Save as New and New Scene.
+- **Room** (Dry, Booth, Room, Large room): evens out each voice's level and places the whole scene in one shared space with quiet room tone; **Join Again** applies a new room or gap without re-rendering. Room tone stays at or below -70 dBFS, since louder tone under the reverb made Whisper hear phantom words.
+- Optional **Engine › Together**: MOSS-TTSD performs up to six lines at a time as one exchange so voices react to each other. Each voice is first sampled cleanly by OmniVoice, each passage is checked with Whisper and re-rendered once if misheard. Installed separately with `setup-moss.command` (Python 3.13, ~10 GB).
+- Autoplay now plays the master shown in the Scene panel, so its trace follows playback.
+
 ## 3.8.0 — studio redesign and studio tools
 
 - Fixed generation freezing: long reference clips (over 20 s) are always trimmed, even when a transcript is saved, and synthesis runs off the server's event loop so the app stays responsive. Quitting no longer hangs on a stuck backend.

@@ -2,7 +2,8 @@ import unittest
 
 import numpy as np
 
-from studio_tools import best_reference_window, align, take_report, splice, parse_cast, sentence_times, utf16_offset
+from studio_tools import (best_reference_window, align, take_report, splice, parse_cast, sentence_times, utf16_offset,
+                          assemble_scene, speech_level_db, ROOMS)
 
 SR = 16000
 
@@ -123,3 +124,32 @@ class WhisperMergeTests(unittest.TestCase):
         self.assertAlmostEqual(end, 1.45, places=2)
         start, end = sentence_times(take_report("One two. Three four.", heard[:2], speechy(2.2), SR), 1, 2.2)
         self.assertEqual(start, end)  # nothing after it: append at the end of the speech
+
+
+class SceneRoomTests(unittest.TestCase):
+    def test_dry_scene_is_a_plain_join(self):
+        a, b = speechy(1.0, seed=1), speechy(0.5, seed=2)
+        out = assemble_scene([a, b], SR, 500, "dry")
+        self.assertEqual(len(out), len(a) + len(b) + SR // 2)
+        np.testing.assert_array_equal(out[:len(a)], a)
+
+    def test_room_matches_line_levels(self):
+        quiet, loud = speechy(1.0, seed=3, level=0.08), speechy(1.0, seed=4, level=0.32)  # 12 dB apart
+        out = assemble_scene([quiet, loud], SR, 0, "booth")
+        first, second = speech_level_db(out[:SR], SR), speech_level_db(out[SR:2 * SR], SR)
+        self.assertLess(abs(first - second), 1.5)
+
+    def test_room_fills_gaps_and_stays_under_ceiling(self):
+        a = speechy(1.0, seed=5, level=0.9)
+        for room in ("booth", "room", "large"):
+            out = assemble_scene([a, a], SR, 800, room)
+            self.assertGreater(len(out), 2 * SR + int(0.8 * SR))  # reverb tail
+            gap = out[SR + int(0.6 * SR): SR + int(0.8 * SR)]
+            self.assertTrue(np.any(gap != 0), room)  # room tone, not digital silence
+            self.assertLessEqual(float(np.max(np.abs(out))), 10 ** (-1 / 20) + 1e-6)
+            np.testing.assert_array_equal(out, assemble_scene([a, a], SR, 800, room))  # deterministic
+
+    def test_unknown_room_is_refused(self):
+        with self.assertRaises(ValueError):
+            assemble_scene([speechy(0.5)], SR, 0, "cathedral")
+        self.assertIn("dry", ROOMS)

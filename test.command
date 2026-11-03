@@ -8,7 +8,7 @@ TEST_BUILD="$(cd "$TEST_BUILD" && pwd)"
 PYTHONPATH="$HERE/Backend" "$OMNI_PYTHON" -B -m unittest discover -s "$HERE/Tests" -p 'test_*.py' -v
 swiftc -D PHASE1_TESTS "$HERE"/Sources/*.swift "$HERE"/Tests/*.swift -parse-as-library -framework SwiftUI -framework AppKit -framework AVFoundation -module-cache-path "$TEST_BUILD/module-cache" -o "$TEST_BUILD/ui-tests"
 "$TEST_BUILD/ui-tests"
-for script in build.command install.command test.command setup-runtime.command verify-runtime.command prepare-models.command; do
+for script in build.command install.command test.command setup-runtime.command verify-runtime.command prepare-models.command setup-moss.command; do
   zsh -n "$HERE/$script"
 done
 "$HERE/build.command" "$TEST_BUILD/release"
@@ -24,7 +24,7 @@ mkdir -p "$TEST_BUILD/bytecode-probe-data"
   OMNIVOICE_DATA_ROOT="$TEST_BUILD/bytecode-probe-data" \
   PYTHONPATH="$APP/Contents/Resources" \
   PYTHONDONTWRITEBYTECODE=1 \
-  "$OMNI_PYTHON" -B -c 'import backend, generation, performance, performance_audio, performance_script, provenance, speech_text, studio_tools'
+  "$OMNI_PYTHON" -B -c 'import backend, generation, moss_engine, performance, performance_audio, performance_script, provenance, speech_text, studio_tools'
 )
 test -z "$(find "$APP/Contents" \( -type d -name __pycache__ -o -type f -name '*.pyc' \) -print -quit)"
 find "$APP/Contents" -type f -exec shasum -a 256 {} \; | sort > "$STATE_AFTER"

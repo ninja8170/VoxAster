@@ -335,3 +335,146 @@ def parse_cast(script, default="NARRATOR"):
         if line["speaker"] not in speakers:
             speakers.append(line["speaker"])
     return lines, speakers
+
+
+# ---------------------------------------------------------------------------
+# Cast scene assembly: one level, one room
+# ---------------------------------------------------------------------------
+
+# Every line is rendered on its own, so each arrives dry, at its own level and
+# with digital silence around it. A shared room puts all the voices in the same
+# space: matched speech level, one reverb and a quiet room tone under the gaps.
+# Room tone stays at -70 dBFS or below: louder tone under a reverb tail made
+# Whisper (Take Doctor) hear phantom words in the gaps.
+ROOMS = {
+    "dry": None,
+    "booth": dict(rt60=0.18, wet=0.10, predelay=0.004, damping=0.55, tone_db=-72.0),
+    "room": dict(rt60=0.42, wet=0.16, predelay=0.010, damping=0.45, tone_db=-70.0),
+    "large": dict(rt60=0.95, wet=0.21, predelay=0.022, damping=0.35, tone_db=-72.0),
+}
+SCENE_SPEECH_DB = -22.0
+SCENE_CEILING = 10 ** (-1 / 20)
+
+
+def speech_level_db(audio, sr):
+    """RMS of the active (speaking) frames only, so pauses don't drag the level down."""
+    db, _ = frame_db(audio, sr)
+    if not db.size:
+        return None
+    active = db[db > max(float(db.max()) - 30.0, -60.0)]
+    if not active.size:
+        return None
+    return float(10 * np.log10(np.mean(10 ** (active / 10)) + 1e-12))
+
+
+def match_level(audio, sr, target_db=SCENE_SPEECH_DB, max_change_db=9.0):
+    """Bring a line toward the scene's speech level; only gross differences are corrected."""
+    audio = np.asarray(audio, dtype=np.float32)
+    level = speech_level_db(audio, sr)
+    if level is None:
+        return audio
+    change = float(np.clip(target_db - level, -max_change_db, max_change_db))
+    return (audio * 10 ** (change / 20)).astype(np.float32)
+
+
+def _one_pole(x, coeff):
+    """Simple low-pass: y[n] = (1-c)·x[n] + c·y[n-1]."""
+    try:
+        from scipy.signal import lfilter
+        return lfilter([1 - coeff], [1, -coeff], x).astype(np.float32)
+    except ImportError:  # pragma: no cover - scipy ships with the runtime
+        y = np.empty_like(x)
+        acc = 0.0
+        for i, v in enumerate(x):
+            acc = (1 - coeff) * v + coeff * acc
+            y[i] = acc
+        return y
+
+
+def room_impulse(sr, rt60, predelay, damping, seed=11):
+    """Deterministic synthetic room: decaying, darkened noise after a short pre-delay."""
+    rng = np.random.default_rng(seed)
+    n = int(sr * rt60 * 1.3)
+    t = np.arange(n) / sr
+    tail = rng.standard_normal(n).astype(np.float32) * np.exp(-6.91 * t / rt60).astype(np.float32)
+    tail = _one_pole(tail, damping)
+    tail /= np.sqrt(np.sum(tail * tail)) + 1e-9
+    return np.concatenate([np.zeros(int(sr * predelay), dtype=np.float32), tail])
+
+
+def _convolve(a, b):
+    try:
+        from scipy.signal import oaconvolve
+        return oaconvolve(a, b).astype(np.float32)
+    except ImportError:  # pragma: no cover
+        size = len(a) + len(b) - 1
+        n = 1 << (size - 1).bit_length()
+        return np.fft.irfft(np.fft.rfft(a, n) * np.fft.rfft(b, n), n)[:size].astype(np.float32)
+
+
+def apply_room(audio, sr, room):
+    audio = np.asarray(audio, dtype=np.float32)
+    spec = ROOMS.get(room)
+    if spec is None:
+        return audio
+    ir = room_impulse(sr, spec["rt60"], spec["predelay"], spec["damping"])
+    wet = _convolve(audio, ir)
+    out = np.concatenate([audio, np.zeros(len(wet) - len(audio), dtype=np.float32)])
+    out += spec["wet"] * wet
+    # Room tone: soft, darkened noise under the whole scene, so gaps aren't digital silence.
+    tone = _one_pole(np.random.default_rng(23).standard_normal(len(out)).astype(np.float32), 0.92)
+    tone *= 10 ** (spec["tone_db"] / 20) / (np.sqrt(np.mean(tone * tone)) + 1e-9)
+    fade = min(len(tone) // 2, int(0.05 * sr))
+    if fade:
+        tone[:fade] *= np.linspace(0, 1, fade, dtype=np.float32)
+        tone[-fade:] *= np.linspace(1, 0, fade, dtype=np.float32)
+    out += tone
+    peak = float(np.max(np.abs(out))) if out.size else 0.0
+    if peak > SCENE_CEILING:
+        out *= SCENE_CEILING / peak
+    return out.astype(np.float32)
+
+
+def assemble_scene(lines, sr, gap_ms, room="dry"):
+    """Join rendered lines with a gap. Any room other than dry also matches levels."""
+    if room not in ROOMS:
+        raise ValueError(f"Unknown room {room!r}.")
+    gap = np.zeros(int(sr * gap_ms / 1000), dtype=np.float32)
+    joined = []
+    for index, audio in enumerate(lines):
+        audio = mono(audio)
+        if ROOMS[room] is not None:
+            audio = match_level(audio, sr)
+        if index:
+            joined.append(gap)
+        joined.append(audio)
+    return apply_room(np.concatenate(joined), sr, room)
+
+
+# ---------------------------------------------------------------------------
+# Cast "Together" engine (MOSS-TTSD): one passage of dialogue in one render
+# ---------------------------------------------------------------------------
+
+MOSS_MAX_SPEAKERS = 5
+
+
+def moss_script(lines):
+    """[{speaker, text}] → ("[S1] … [S2] …", [speaker names in S-number order])."""
+    order, parts = [], []
+    for line in lines:
+        speaker, text = str(line.get("speaker", "")).strip(), " ".join(str(line.get("text", "")).split())
+        if not speaker or not text:
+            raise ValueError("Every line needs a speaker and text.")
+        if speaker not in order:
+            order.append(speaker)
+        if len(order) > MOSS_MAX_SPEAKERS:
+            raise ValueError(f"MOSS-TTSD takes at most {MOSS_MAX_SPEAKERS} speakers in one passage.")
+        parts.append(f"[S{order.index(speaker) + 1}] {text}")
+    if not parts:
+        raise ValueError("The passage is empty.")
+    return " ".join(parts), order
+
+
+def moss_token_budget(text):
+    """Generation rows to allow: MOSS emits ~12.5 rows per second of speech, speech runs ~15 chars/s."""
+    return int(min(2400, max(320, len(text) * 2)))

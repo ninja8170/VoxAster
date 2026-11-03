@@ -186,6 +186,24 @@ struct CastPlate: View {
                 Text(speakers.isEmpty ? "no characters yet" : "\(speakers.count) characters · \(cast.parsed.count) lines")
                     .font(.traceValue).foregroundStyle(Trace.graphite)
                 Spacer()
+                TextField(cast.defaultSceneName, text: $cast.sceneName)
+                    .textFieldStyle(.plain).font(.system(size: 13, design: .serif)).foregroundStyle(Trace.ink)
+                    .multilineTextAlignment(.trailing).frame(maxWidth: 220)
+                    .help("Scene name in the Library")
+                Menu {
+                    Button("Save as New Scene") { cast.saveScene(asNew: true) }
+                        .disabled(cast.sceneID == nil)
+                    Divider()
+                    Button("New Scene") { cast.newScene() }.disabled(cast.busy)
+                } label: {
+                    Text(cast.sceneID == nil ? "Save Scene" : "Save")
+                } primaryAction: {
+                    cast.saveScene()
+                }
+                .menuStyle(.borderlessButton).fixedSize()
+                .font(.traceBody)
+                .disabled(cast.script.isEmpty && cast.lines.isEmpty)
+                .help(cast.sceneID == nil ? "Keep this scene, its voices and every rendered line in Library › Scenes" : "Update this scene in Library › Scenes")
             }
             if !speakers.isEmpty {
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 24), GridItem(.flexible(), spacing: 24)], alignment: .leading, spacing: 6) {
@@ -281,7 +299,21 @@ struct CastPanel: View {
         VStack(spacing: 0) {
             HStack {
                 SectionLabel("Scene", trailing: cast.status.isEmpty ? nil : cast.status)
-                if cast.busy { Button("Stop") { cast.cancel() }.controlSize(.small) }
+                if cast.busy {
+                    Button("Stop") { cast.cancel() }.controlSize(.small)
+                } else if !cast.missing.isEmpty, !cast.lines.isEmpty {
+                    Button(cast.failedCount > 0 ? "Retry Failed (\(cast.missing.count))" : "Render Remaining (\(cast.missing.count))") {
+                        cast.retryMissing(model)
+                    }
+                    .controlSize(.small)
+                    .disabled(!cast.canRetry(model))
+                    .help("Render every line without audio, keep the rest, then join the scene")
+                } else if !cast.lines.isEmpty {
+                    Button("Join Again") { cast.rejoin(model) }
+                        .controlSize(.small)
+                        .disabled(!cast.canRetry(model))
+                        .help("Join the rendered lines again with the current gap and room, without re-rendering")
+                }
             }
             .padding(.horizontal, 14).padding(.vertical, 9)
             Hairline()
@@ -295,7 +327,7 @@ struct CastPanel: View {
             }
             if cast.lines.isEmpty {
                 EmptyNote(title: "No scene rendered yet",
-                          detail: "Each line is rendered in its character's voice, then joined with a \(Int(cast.gapMs)) ms gap.")
+                          detail: "Each line is rendered in its character's voice, then joined with a \(Int(cast.gapMs)) ms gap in one shared room.")
             } else {
                 ScrollView {
                     LazyVStack(spacing: 0) {
@@ -303,8 +335,14 @@ struct CastPanel: View {
                             HStack(alignment: .center, spacing: 12) {
                                 Text(line.speaker).font(.traceValue.weight(.semibold)).foregroundStyle(Trace.ink)
                                     .frame(width: 84, alignment: .leading).lineLimit(1)
-                                Text(line.text).font(.system(size: 13, design: .serif)).lineLimit(2)
-                                    .frame(width: 220, alignment: .leading)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(line.text).font(.system(size: 13, design: .serif)).lineLimit(line.parts == nil ? 2 : 7)
+                                    if let error = line.error {
+                                        Text(error).font(.traceCaption).foregroundStyle(Trace.record).lineLimit(1)
+                                            .help(error)
+                                    }
+                                }
+                                .frame(width: 220, alignment: .leading)
                                 if let url = line.output {
                                     PlayerTrace(url: url, controller: model.outputPlayer, showRuler: false).frame(height: 26)
                                 } else {
@@ -314,8 +352,8 @@ struct CastPanel: View {
                                 }
                                 Button { cast.retry(index, model: model) } label: { Image(systemName: "arrow.clockwise") }
                                     .buttonStyle(.borderless)
-                                    .disabled(cast.busy || model.busy || !model.modelReady)
-                                    .help("Render this line again")
+                                    .disabled(!cast.canRetry(model))
+                                    .help(line.parts == nil ? "Render this line again" : "Render this passage again")
                             }
                             .padding(.horizontal, 14).padding(.vertical, 7)
                             Hairline()
@@ -339,11 +377,48 @@ struct CastInspector: View {
                 .font(.traceCaption).foregroundStyle(Trace.graphite)
                 .fixedSize(horizontal: false, vertical: true)
             Hairline()
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Engine").font(.traceCaption).foregroundStyle(Trace.graphite)
+                Picker("Engine", selection: $cast.engine) {
+                    ForEach(CastStore.engines, id: \.id) { Text($0.name).tag($0.id) }
+                }
+                .pickerStyle(.segmented).labelsHidden()
+                if cast.engine == "moss" {
+                    if let status = cast.mossStatus, !status.available {
+                        Text(status.reason).font(.traceCaption).foregroundStyle(Trace.record)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        Text("MOSS-TTSD performs up to six lines at a time as one exchange, so voices react to each other. Each voice is first sampled cleanly by OmniVoice, which MOSS then copies. Each passage is checked against the script and rendered again once if it was misheard. Pronunciation rules and language from the other tabs don't apply.")
+                            .font(.traceCaption).foregroundStyle(Trace.pencil)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                } else {
+                    Text("Each line is rendered on its own in its character's voice.")
+                        .font(.traceCaption).foregroundStyle(Trace.pencil)
+                }
+            }
+            Hairline()
             ValueSlider(label: "Gap between lines (ms)", value: $cast.gapMs, range: 0...1500, format: "%.0f",
                         help: "Silence inserted between consecutive lines in the joined scene")
-            Text("Speed, steps, language and pronunciation rules from the other tabs apply to every line.")
-                .font(.traceCaption).foregroundStyle(Trace.pencil)
-                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Room").font(.traceCaption).foregroundStyle(Trace.graphite)
+                Picker("Room", selection: $cast.room) {
+                    ForEach(CastStore.rooms, id: \.id) { Text($0.name).tag($0.id) }
+                }
+                .pickerStyle(.segmented).labelsHidden()
+                Text(cast.room == "dry"
+                     ? "Lines are joined exactly as rendered."
+                     : "Voices are evened out to one level and placed in the same space, with quiet room tone under the gaps.")
+                    .font(.traceCaption).foregroundStyle(Trace.pencil)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if cast.engine == "lines" {
+                Text("Speed, steps, language and pronunciation rules from the other tabs apply to every line.")
+                    .font(.traceCaption).foregroundStyle(Trace.pencil)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
+        .onAppear { cast.refreshEngines() }
+        .onChange(of: cast.engine) { _, _ in cast.refreshEngines() }
     }
 }

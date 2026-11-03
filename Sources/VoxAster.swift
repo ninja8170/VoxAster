@@ -491,10 +491,12 @@ final class AppModel: ObservableObject {
         if let p = backend, p.isRunning { p.terminate() }
     }
 
-    private var documentsRoot: URL {
+    nonisolated static var documentsRootURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Documents/OmniVoice-Mac", isDirectory: true)
     }
+
+    private var documentsRoot: URL { Self.documentsRootURL }
 
     private var outputsDir: URL { documentsRoot.appendingPathComponent("outputs", isDirectory: true) }
     private var voicesDir: URL { documentsRoot.appendingPathComponent("voices", isDirectory: true) }

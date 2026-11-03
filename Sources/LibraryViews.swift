@@ -219,6 +219,122 @@ struct ProductionsLibrary: View {
     }
 }
 
+// MARK: - Scenes (Cast)
+
+struct ScenesLibrary: View {
+    @EnvironmentObject var model: AppModel
+    @EnvironmentObject var ui: StudioUI
+    @EnvironmentObject var cast: CastStore
+    @State private var selection = Set<CastStore.Scene.ID>()
+    @State private var renaming: CastStore.Scene?
+    @State private var newName = ""
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Scenes").font(.traceTitle)
+                Text("\(cast.scenes.count)").font(.traceValue).foregroundStyle(Trace.graphite)
+                Spacer()
+                Button("New Scene") { cast.newScene(); ui.setMode(.cast, model) }.disabled(cast.busy)
+            }
+            .padding(.horizontal, 20).padding(.vertical, 14)
+            Hairline()
+            if cast.scenes.isEmpty {
+                EmptyNote(title: "No scenes", detail: "Write a scene in Cast, then choose Save Scene.")
+            } else {
+                Table(cast.scenes, selection: $selection) {
+                    TableColumn("") { scene in
+                        if let url = masterURL(scene) {
+                            Button { model.outputPlayer.toggle(url) } label: {
+                                Image(systemName: model.outputPlayer.isPlaying(url) ? "pause.fill" : "play.fill")
+                                    .foregroundStyle(model.outputPlayer.isPlaying(url) ? Trace.record : Trace.ink)
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Play the joined scene")
+                        }
+                    }
+                    .width(28)
+                    TableColumn("Trace") { scene in
+                        if let url = masterURL(scene) { TraceView(url: url, progress: nil, showRuler: false).frame(height: 22) }
+                    }
+                    .width(min: 90, ideal: 140, max: 200)
+                    TableColumn("Name") { scene in
+                        Text(scene.name).font(.system(size: 13, design: .serif)).lineLimit(1)
+                    }
+                    TableColumn("Cast") { scene in
+                        Text(speakers(scene)).font(.traceCaption).foregroundStyle(Trace.graphite).lineLimit(1)
+                    }
+                    .width(min: 100, ideal: 160)
+                    TableColumn("Lines") { scene in
+                        let done = scene.lines.filter { $0.path != nil }.count
+                        Text(done == scene.lines.count ? "\(done)" : "\(done) of \(scene.lines.count)")
+                            .font(.traceValue.monospacedDigit())
+                            .foregroundStyle(done == scene.lines.count ? Trace.graphite : Trace.record)
+                    }
+                    .width(min: 50, ideal: 64, max: 80)
+                    TableColumn("Updated") { scene in
+                        Text(scene.updatedAt.formatted(date: .abbreviated, time: .shortened))
+                            .font(.traceValue).foregroundStyle(Trace.graphite)
+                    }
+                    .width(min: 120, ideal: 150, max: 180)
+                }
+                .contextMenu(forSelectionType: CastStore.Scene.ID.self) { ids in
+                    if let scene = cast.scenes.first(where: { ids.contains($0.id) }) {
+                        Button("Open in Cast") { open(scene) }.disabled(cast.busy)
+                        if let url = masterURL(scene) {
+                            Button("Play") { model.outputPlayer.toggle(url) }
+                            Button("Export…") { model.exportOutput(url) }
+                        }
+                        Button("Rename…") { newName = scene.name; renaming = scene }
+                        Button("Show in Finder") { model.reveal(cast.folder(for: scene.id)) }
+                        Divider()
+                        Button("Delete Scene", role: .destructive) { cast.deleteScene(scene) }
+                            .disabled(cast.busy && cast.sceneID == scene.id)
+                    }
+                } primaryAction: { ids in
+                    if let scene = cast.scenes.first(where: { ids.contains($0.id) }) { open(scene) }
+                }
+            }
+        }
+        .onAppear { cast.loadScenes() }
+        .sheet(item: $renaming) { scene in
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Rename Scene").font(.traceSection)
+                TextField("Name", text: $newName).frame(width: 280).onSubmit { commitRename(scene) }
+                HStack {
+                    Spacer()
+                    Button("Cancel", role: .cancel) { renaming = nil }.keyboardShortcut(.cancelAction)
+                    Button("Rename") { commitRename(scene) }.keyboardShortcut(.defaultAction)
+                        .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+            .padding(20)
+        }
+    }
+
+    private func masterURL(_ scene: CastStore.Scene) -> URL? {
+        scene.master.map { cast.folder(for: scene.id).appendingPathComponent($0) }
+            .flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }
+    }
+
+    private func speakers(_ scene: CastStore.Scene) -> String {
+        var seen: [String] = []
+        for line in scene.lines where !seen.contains(line.speaker) { seen.append(line.speaker) }
+        return seen.map(\.localizedCapitalized).joined(separator: ", ")
+    }
+
+    private func open(_ scene: CastStore.Scene) {
+        guard !cast.busy else { return }
+        cast.openScene(scene)
+        ui.setMode(.cast, model)
+    }
+
+    private func commitRename(_ scene: CastStore.Scene) {
+        cast.renameScene(scene, to: newName)
+        renaming = nil
+    }
+}
+
 // MARK: - Project
 
 struct ProjectLibrary: View {

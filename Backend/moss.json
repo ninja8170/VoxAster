@@ -1,0 +1,12 @@
+{
+  "engine": "MOSS-TTSD",
+  "license": "Apache-2.0",
+  "python": "3.13",
+  "package": "mlx-speech",
+  "package_version": "0.5.6",
+  "model_repo": "appautomaton/openmoss-ttsd-mlx",
+  "model_revision": "f631c960665caf6fa6cb88668107a784682bc71e",
+  "codec_repo": "appautomaton/openmoss-audio-tokenizer-mlx",
+  "codec_revision": "3b22b5958c15f807e3ca8faae2cc3b7cc4b74552",
+  "variant": "mlx-int8"
+}
