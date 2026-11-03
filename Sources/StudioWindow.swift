@@ -38,6 +38,8 @@ final class StudioUI: ObservableObject {
     @Published var inspectorTab: InspectorTab = .voice
     @Published var showModelPreview = false
     @Published var castActive = false
+    /// The full-window Scene Editor over the whole studio (Cast only).
+    @Published var sceneEditor = false
     @Published var showSaveVoice = false
     @Published var takes: Int = UserDefaults.standard.integer(forKey: "studioTakes").clamped(1, 4) {
         didSet { UserDefaults.standard.set(takes, forKey: "studioTakes") }
@@ -57,6 +59,7 @@ extension StudioUI {
             castActive = true
         } else {
             castActive = false
+            sceneEditor = false
             model.setStudioMode(mode)
         }
         place = .studio
@@ -293,6 +296,13 @@ struct StudioRoot: View {
                 .inspectorColumnWidth(min: 260, ideal: Trace.inspectorWidth, max: 360)
         }
         .toolbar { StudioToolbar() }
+        .overlay {
+            if ui.sceneEditor && ui.castActive && ui.place == .studio {
+                SceneEditor(player: model.outputPlayer)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.15), value: ui.sceneEditor)
         .navigationTitle(model.currentProject?.name ?? "VoxAster")
         .navigationSubtitle(model.statusLine)
         .background(RuntimeSetupPresentation(setup: model.runtimeSetup))

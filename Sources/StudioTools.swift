@@ -244,7 +244,11 @@ final class TakeDoctor: ObservableObject {
 @MainActor
 final class CastStore: ObservableObject {
     /// One spoken line inside a Together passage.
-    struct Part: Codable, Equatable { var speaker: String; var text: String }
+    struct Part: Codable, Equatable {
+        var speaker: String; var text: String
+        var cut: Bool? = nil    // the line ends "--": the next speaker cuts it off
+        var over: Bool? = nil   // the line starts ">>": it talks over the previous one
+    }
 
     /// A rendered unit of the scene: one line (Line by line) or a passage of several lines (Together).
     struct Line: Identifiable, Equatable {
@@ -255,9 +259,14 @@ final class CastStore: ObservableObject {
         var output: URL?
         var error: String?
         var parts: [Part]? = nil
+        var cut = false, over = false
+        /// Together: where each part sits in the passage audio, [start, end] seconds (from Whisper).
+        var slices: [[Double]]? = nil
 
-        init(speaker: String, text: String, state: String = "Pending", output: URL? = nil, error: String? = nil) {
+        init(speaker: String, text: String, state: String = "Pending", output: URL? = nil, error: String? = nil,
+             cut: Bool = false, over: Bool = false) {
             self.speaker = speaker; self.text = text; self.state = state; self.output = output; self.error = error
+            self.cut = cut; self.over = over
         }
 
         init(passage: [Part]) {
@@ -272,6 +281,7 @@ final class CastStore: ObservableObject {
     /// A line as written to disk. In the draft `path` is absolute; in a saved scene it is a file name in the scene folder.
     struct StoredLine: Codable, Equatable {
         var speaker: String; var text: String; var path: String?; var error: String?; var parts: [Part]? = nil
+        var cut: Bool? = nil; var over: Bool? = nil; var slices: [[Double]]? = nil
     }
 
     /// Whether the Together engine (MOSS-TTSD) is installed, as reported by the backend.
@@ -287,6 +297,15 @@ final class CastStore: ObservableObject {
         var room: String?; var lines: [StoredLine]?; var master: String?
         var sceneID: UUID?; var sceneName: String?
         var engine: String?; var designRefs: [String: String]?
+        var clips: [Clip]?
+        var tracks: Tracks?
+    }
+
+    /// Per-lane mix controls in the Scene Editor (Audacity-style track panel).
+    struct Tracks: Codable, Equatable {
+        var muted: [String] = []
+        var soloed: [String] = []
+        var gain: [String: Double] = [:]
     }
 
     /// A scene in the Library: its own folder holding copies of every line and the master,
@@ -304,6 +323,8 @@ final class CastStore: ObservableObject {
         var updatedAt: Date
         var engine: String? = nil
         var designRefs: [String: String]? = nil   // file names in the scene folder
+        var clips: [Clip]? = nil
+        var tracks: Tracks? = nil
     }
 
     /// Designed cast voices: plain descriptors the engine accepts.
@@ -335,6 +356,14 @@ final class CastStore: ObservableObject {
     @Published var sceneName: String { didSet { save() } }
     @Published private(set) var sceneID: UUID? { didSet { save() } }
     @Published private(set) var lines: [Line] = [] { didSet { save() } }
+    /// The timeline: every line as a clip on its speaker's lane, in script order.
+    @Published private(set) var clips: [Clip] = [] { didSet { if !liveEdit { save() } } }
+    @Published private(set) var mixing = false
+    @Published var tracks = Tracks() { didSet { save() } }
+    private var liveEdit = false
+    private var masterIsEdit = false
+    private var remixTask: Task<Void, Never>?
+    private var durations: [URL: Double] = [:]
     @Published private(set) var masterURL: URL? { didSet { save() } }
     @Published private(set) var scenes: [Scene] = []
     @Published private(set) var busy = false
@@ -362,6 +391,8 @@ final class CastStore: ObservableObject {
         sceneID = saved?.sceneID
         lines = (saved?.lines ?? []).map { Self.line($0, folder: nil) }
         masterURL = saved?.master.map { URL(fileURLWithPath: $0) }.flatMap { Self.exists($0) ? $0 : nil }
+        clips = (saved?.clips ?? []).filter { $0.unit < lines.count }
+        tracks = saved?.tracks ?? Tracks()
         restoring = false
         loadScenes()
     }
@@ -374,15 +405,23 @@ final class CastStore: ObservableObject {
         line.state = url != nil ? "Done" : (stored.error != nil && url == nil ? "Failed" : "Pending")
         line.output = url
         line.error = stored.error
+        line.cut = stored.cut ?? false
+        line.over = stored.over ?? false
+        line.slices = stored.slices
         return line
+    }
+
+    private static func stored(_ line: Line, path: String?) -> StoredLine {
+        StoredLine(speaker: line.speaker, text: line.text, path: path, error: line.error, parts: line.parts,
+                   cut: line.cut ? true : nil, over: line.over ? true : nil, slices: line.slices)
     }
 
     private func save() {
         guard !restoring else { return }
         let draft = Saved(script: script, assignments: assignments, gapMs: gapMs, room: room,
-                          lines: lines.map { StoredLine(speaker: $0.speaker, text: $0.text, path: $0.output?.path, error: $0.error, parts: $0.parts) },
+                          lines: lines.map { Self.stored($0, path: $0.output?.path) },
                           master: masterURL?.path, sceneID: sceneID, sceneName: sceneName,
-                          engine: engine, designRefs: designRefs.mapValues(\.path))
+                          engine: engine, designRefs: designRefs.mapValues(\.path), clips: clips, tracks: tracks)
         guard let data = try? JSONEncoder().encode(draft) else { return }
         try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? data.write(to: file, options: .atomic)
@@ -408,6 +447,30 @@ final class CastStore: ObservableObject {
     }
 
     var parsed: [(speaker: String, text: String)] { Self.parse(script) }
+
+    /// Interruption marks: a line ending "--" (or "—") is cut off by the next speaker; a line
+    /// starting ">>" talks over the previous one. Marks never reach the voice engine.
+    nonisolated static func cue(_ raw: String) -> (text: String, cut: Bool, over: Bool) {
+        var text = raw.trimmingCharacters(in: .whitespaces)
+        var over = false, cut = false
+        if text.hasPrefix(">>") {
+            over = true
+            text = String(text.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+        }
+        for mark in ["--", "—", "–"] where text.hasSuffix(mark) {
+            cut = true
+            text = String(text.dropLast(mark.count)).trimmingCharacters(in: .whitespaces) + "—"
+            break
+        }
+        return (text, cut, over)
+    }
+
+    var cues: [Part] {
+        parsed.map { line in
+            let c = Self.cue(line.text)
+            return Part(speaker: line.speaker, text: c.text, cut: c.cut ? true : nil, over: c.over ? true : nil)
+        }
+    }
 
     var speakers: [String] {
         var seen: [String] = []
@@ -441,16 +504,20 @@ final class CastStore: ObservableObject {
 
     /// Consecutive lines grouped into passages MOSS renders in one pass.
     nonisolated static func passages(_ lines: [(speaker: String, text: String)]) -> [[Part]] {
+        passages(lines.map { Part(speaker: $0.speaker, text: $0.text) })
+    }
+
+    nonisolated static func passages(_ lines: [Part]) -> [[Part]] {
         var result: [[Part]] = []
         var current: [Part] = []
-        func fits(_ line: (speaker: String, text: String)) -> Bool {
+        func fits(_ line: Part) -> Bool {
             let speakers = Set(current.map(\.speaker) + [line.speaker])
             let chars = current.reduce(0) { $0 + $1.text.count } + line.text.count
             return current.count < passageLines && chars <= passageChars && speakers.count <= passageSpeakers
         }
         for line in lines {
             if !current.isEmpty && !fits(line) { result.append(current); current = [] }
-            current.append(Part(speaker: line.speaker, text: line.text))
+            current.append(line)
         }
         if !current.isEmpty { result.append(current) }
         return result
@@ -473,8 +540,10 @@ final class CastStore: ObservableObject {
 
     func render(_ model: AppModel) {
         guard canRender(model) else { return }
-        lines = engine == "moss" ? Self.passages(parsed).map { Line(passage: $0) }
-                                 : parsed.map { Line(speaker: $0.speaker, text: $0.text) }
+        let cues = self.cues
+        lines = engine == "moss" ? Self.passages(cues).map { Line(passage: $0) }
+            : cues.map { Line(speaker: $0.speaker, text: $0.text, cut: $0.cut ?? false, over: $0.over ?? false) }
+        clips = []
         masterURL = nil
         run(Array(lines.indices), model: model)
     }
@@ -544,6 +613,7 @@ final class CastStore: ObservableObject {
             if Task.isCancelled {
                 status = missing.isEmpty ? "Stopped" : "Stopped · \(missing.count) of \(lines.count) lines left"
             } else if missing.isEmpty {
+                if clips.isEmpty || indices.count == lines.count { layoutAll() } else { indices.forEach(rippleUnit) }
                 joined = await assemble(model)
             } else {
                 let failed = failedCount
@@ -621,6 +691,7 @@ final class CastStore: ObservableObject {
             throw StudioAPI.Failure(message: "MOSS-TTSD returned an unreadable response.")
         }
         let score = json["score"] as? Int ?? 100
+        if let segments = json["segments"] as? [[Double]], segments.count == parts.count { lines[index].slices = segments }
         if score < 90 {
             lines[index].error = "Check \(score)/100: some words may be off. Listen, or render this passage again."
         }
@@ -656,24 +727,40 @@ final class CastStore: ObservableObject {
         return url
     }
 
-    /// Joins the scene. Returns true when a new master was made.
+    /// Mixes the timeline into the master. Renders record the master as a take; timeline edits
+    /// (`record: false`) replace their own previous edit master instead of filling Takes.
     @discardableResult
-    private func assemble(_ model: AppModel) async -> Bool {
-        let paths = lines.compactMap { $0.output?.path }
-        guard paths.count == lines.count else { return false }
-        status = "Joining \(paths.count) lines"
-        do {
-            let path = try StudioAPI.outputPath(try await StudioAPI.post("cast/assemble", fields: [
-                "paths": StudioAPI.jsonList(paths), "gap_ms": String(Int(gapMs)), "room": room]))
-            masterURL = URL(fileURLWithPath: path)
-            progress = 1
-            status = "Scene ready · \(lines.count) lines, \(Set(lines.map(\.speaker)).count) voices"
-            model.recordTake(path: path, text: script, mode: "Cast")
-            return true
-        } catch {
-            status = "Could not join the scene: \(error.localizedDescription)"
+    private func assemble(_ model: AppModel, record: Bool = true) async -> Bool {
+        guard !lines.isEmpty, missing.isEmpty else { return false }
+        if Set(clips.map(\.unit)) != Set(lines.indices) { layoutAll() }
+        guard !clips.isEmpty else {
+            status = "Could not read the rendered lines to lay out the timeline"
             return false
         }
+        mixing = true
+        defer { mixing = false }
+        status = record ? "Mixing \(clips.count) clips" : "Updating the mix"
+        do {
+            let path = try StudioAPI.outputPath(try await StudioAPI.post("cast/mix", fields: [
+                "clips": try Self.json(mixClips()), "room": room]))
+            let previous = masterURL, previousWasEdit = masterIsEdit
+            masterURL = URL(fileURLWithPath: path)
+            masterIsEdit = !record
+            if previousWasEdit, let previous, !previous.path.hasPrefix(scenesRoot.path) {
+                try? FileManager.default.removeItem(at: previous)
+            }
+            progress = 1
+            status = "Scene ready · \(clips.count) lines, \(Set(clips.map(\.lane)).count) voices"
+            if record { model.recordTake(path: path, text: script, mode: "Cast") }
+            return true
+        } catch {
+            status = "Could not mix the scene: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    private static func json(_ value: Any) throws -> String {
+        String(data: try JSONSerialization.data(withJSONObject: value), encoding: .utf8)!
     }
 
     /// Plays the master the Scene panel shows. Called after any save, which moves the master
@@ -729,8 +816,7 @@ final class CastStore: ObservableObject {
             for index in adopted.indices {
                 let name = try adopt(adopted[index].output)
                 if let name { adopted[index].output = folder.appendingPathComponent(name) }
-                stored.append(StoredLine(speaker: adopted[index].speaker, text: adopted[index].text, path: name,
-                                         error: adopted[index].error, parts: adopted[index].parts))
+                stored.append(Self.stored(adopted[index], path: name))
             }
             let masterName = try adopt(masterURL)
             var refNames: [String: String] = [:]
@@ -740,7 +826,7 @@ final class CastStore: ObservableObject {
             let scene = Scene(id: id, name: name, script: script, assignments: assignments, gapMs: gapMs, room: room,
                               lines: stored, master: masterName,
                               createdAt: scenes.first { $0.id == id }?.createdAt ?? now, updatedAt: now,
-                              engine: engine, designRefs: refNames)
+                              engine: engine, designRefs: refNames, clips: clips, tracks: tracks)
             try JSONEncoder().encode(scene).write(to: folder.appendingPathComponent("scene.json"), options: .atomic)
             // Drop superseded line files (e.g. a line that was rendered again).
             for item in (try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
@@ -771,6 +857,9 @@ final class CastStore: ObservableObject {
         engine = scene.engine.flatMap { e in Self.engines.contains { $0.id == e } ? e : nil } ?? "lines"
         designRefs = (scene.designRefs ?? [:]).mapValues { folder.appendingPathComponent($0) }.filter { Self.exists($0.value) }
         lines = scene.lines.map { Self.line($0, folder: folder) }
+        clips = (scene.clips ?? []).filter { $0.unit < lines.count }
+        tracks = scene.tracks ?? Tracks()
+        if clips.isEmpty && missing.isEmpty && !lines.isEmpty { layoutAll() }
         masterURL = scene.master.map { folder.appendingPathComponent($0) }.flatMap { Self.exists($0) ? $0 : nil }
         sceneID = scene.id
         sceneName = scene.name
@@ -800,6 +889,7 @@ final class CastStore: ObservableObject {
                 reset.output = nil; reset.state = "Pending"; reset.error = nil
                 return reset
             }
+            clips = []
             masterURL = nil
         }
         loadScenes()
@@ -810,11 +900,224 @@ final class CastStore: ObservableObject {
         guard !busy else { return }
         script = ""
         lines = []
+        clips = []
+        tracks = Tracks()
         masterURL = nil
         sceneID = nil
         sceneName = ""
         designRefs = [:]
         progress = 0
         status = ""
+    }
+}
+
+// MARK: - Cast timeline
+
+extension CastStore {
+    /// One line on the timeline: a slice of a rendered unit's audio, placed on its speaker's lane.
+    struct Clip: Codable, Identifiable, Equatable {
+        var id = UUID()
+        var unit: Int            // index into lines
+        var part: Int            // index within a Together passage (0 for a single line)
+        var lane: String
+        var text: String
+        var srcIn: Double        // seconds into the unit's audio
+        var srcOut: Double
+        var start: Double        // seconds on the timeline
+        var gainDb: Double = 0
+        var cut = false          // cut off by the next line
+        var over = false         // talks over the previous line
+        var length: Double { srcOut - srcIn }
+        var end: Double { start + length }
+    }
+
+    nonisolated static let cutOverlap = 0.25, overLead = 0.8, minLead = 0.3
+
+    /// Places units one after another. Lines in a Together passage keep MOSS's own timing;
+    /// a cut-off line is overlapped by the next one, a ">>" line comes in before the previous ends.
+    nonisolated static func layout(_ units: [[Clip]], gap: Double) -> [Clip] {
+        var out: [Clip] = []
+        for unit in units {
+            for (k, var clip) in unit.enumerated() {
+                if let prev = out.last {
+                    var start = k == 0 ? prev.end + gap : prev.start + (clip.srcIn - unit[k - 1].srcIn)
+                    if clip.over {
+                        start = min(start, max(prev.start + minLead, prev.end - overLead))
+                    } else if prev.cut {
+                        start = min(start, max(prev.start + minLead, prev.end - cutOverlap))
+                    }
+                    clip.start = max(0, start)
+                } else {
+                    clip.start = 0
+                }
+                out.append(clip)
+            }
+        }
+        return out
+    }
+
+    /// Splits a passage by text length when Whisper timings aren't available.
+    nonisolated static func proportionalSlices(_ texts: [String], _ duration: Double) -> [[Double]] {
+        let weights = texts.map { Double(max(1, $0.count)) }, total = weights.reduce(0, +)
+        var t = 0.0
+        return weights.map { w in
+            defer { t += duration * w / total }
+            return [t, t + duration * w / total]
+        }
+    }
+
+    func unitDuration(_ index: Int) -> Double? {
+        guard lines.indices.contains(index), let url = lines[index].output else { return nil }
+        if let known = durations[url] { return known }
+        guard let file = try? AVAudioFile(forReading: url) else { return nil }
+        let seconds = Double(file.length) / file.processingFormat.sampleRate
+        durations[url] = seconds
+        return seconds
+    }
+
+    /// A unit's clips at unit-relative times (start == srcIn).
+    private func unitClips(_ index: Int) -> [Clip]? {
+        guard let duration = unitDuration(index) else { return nil }
+        let line = lines[index]
+        guard let parts = line.parts else {
+            return [Clip(unit: index, part: 0, lane: line.speaker, text: line.text, srcIn: 0, srcOut: duration,
+                         start: 0, cut: line.cut, over: line.over)]
+        }
+        let slices = line.slices?.count == parts.count ? line.slices! : Self.proportionalSlices(parts.map(\.text), duration)
+        return parts.indices.map { i in
+            let a = min(max(0, slices[i][0]), duration - 0.05)
+            return Clip(unit: index, part: i, lane: parts[i].speaker, text: parts[i].text, srcIn: a,
+                        srcOut: max(a + 0.05, min(duration, slices[i][1])), start: a,
+                        cut: parts[i].cut ?? false, over: parts[i].over ?? false)
+        }
+    }
+
+    /// Lays the whole scene out from the script again, discarding timeline edits.
+    func layoutAll() {
+        var units: [[Clip]] = []
+        for index in lines.indices {
+            guard let unit = unitClips(index) else { clips = []; return }
+            units.append(unit)
+        }
+        clips = Self.layout(units, gap: gapMs / 1000)
+    }
+
+    /// After a unit is rendered again: keep its start, and shift everything after it by the
+    /// change in length so gaps and overlaps the user set stay as they were.
+    fileprivate func rippleUnit(_ index: Int) {
+        let old = clips.filter { $0.unit == index }
+        guard let fresh = unitClips(index), let anchor = old.min(by: { $0.start < $1.start }),
+              let oldEnd = old.map(\.end).max() else { layoutAll(); return }
+        let base = fresh[0].srcIn
+        let placed = fresh.map { clip -> Clip in
+            var clip = clip
+            clip.start = anchor.start + (clip.srcIn - base)
+            if let previous = old.first(where: { $0.part == clip.part }) { clip.id = previous.id; clip.gainDb = previous.gainDb }
+            return clip
+        }
+        let delta = (placed.map(\.end).max() ?? oldEnd) - oldEnd
+        clips = (clips.filter { $0.unit != index }.map { clip in
+            var clip = clip
+            if clip.unit > index { clip.start = max(0, clip.start + delta) }
+            return clip
+        } + placed).sorted { ($0.unit, $0.part) < ($1.unit, $1.part) }
+    }
+
+    /// What /cast/mix receives. Cut-offs and talk-overs follow wherever the clips now sit.
+    fileprivate func mixClips() -> [[String: Any]] {
+        var items: [[String: Any]] = clips.map { clip in
+            ["path": lines[clip.unit].output?.path ?? "", "src_in": clip.srcIn, "src_out": clip.srcOut,
+             "at": clip.start, "lane": clip.lane, "gain_db": clip.gainDb + (tracks.gain[clip.lane] ?? 0)]
+        }
+        for i in clips.indices.dropFirst() {
+            if clips[i].over { items[i - 1]["duck_from"] = clips[i].start }
+            if clips[i - 1].cut { items[i - 1]["cut_at"] = clips[i].start + Self.cutOverlap }
+        }
+        // Mute and solo decide which lanes are heard; at least one clip always goes to the mixer.
+        let audible = clips.indices.filter { isAudible(clips[$0].lane) }
+        return audible.isEmpty ? [items[0].merging(["gain_db": -96.0]) { $1 }] : audible.map { items[$0] }
+    }
+
+    func isAudible(_ lane: String) -> Bool {
+        !tracks.muted.contains(lane) && (tracks.soloed.isEmpty || tracks.soloed.contains(lane))
+    }
+
+    var timelineDuration: Double { clips.map(\.end).max() ?? 0 }
+    var lanes: [String] {
+        var seen: [String] = []
+        for clip in clips where !seen.contains(clip.lane) { seen.append(clip.lane) }
+        return seen
+    }
+
+    // MARK: Editing
+
+    /// Live change while dragging: no save, no mix.
+    func editClip(_ id: UUID, _ change: (inout Clip) -> Void) {
+        guard let i = clips.firstIndex(where: { $0.id == id }) else { return }
+        liveEdit = true
+        var clip = clips[i]
+        change(&clip)
+        clip.start = max(0, clip.start)
+        if let duration = unitDuration(clip.unit) {
+            clip.srcIn = min(max(0, clip.srcIn), duration - 0.05)
+            clip.srcOut = min(max(clip.srcIn + 0.05, clip.srcOut), duration)
+        }
+        clips[i] = clip
+        liveEdit = false
+    }
+
+    /// After an edit: save, then rebuild the master shortly after the last change. Playback
+    /// carries on from the same point in the new mix.
+    func commitEdit(_ model: AppModel) {
+        save()
+        remixTask?.cancel()
+        remixTask = Task {
+            try? await Task.sleep(nanoseconds: 450_000_000)
+            guard !Task.isCancelled, !busy, !mixing, missing.isEmpty else { return }
+            let player = model.outputPlayer
+            let playing = masterURL.map { player.isPlaying($0) } ?? false
+            let position = masterURL.map { player.currentTime(for: $0) } ?? 0
+            guard await assemble(model, record: false) else { return }
+            if sceneID != nil { saveScene(announce: false) }
+            if playing, let master = masterURL {
+                player.toggle(master)
+                player.seek(master, to: position)
+            }
+        }
+    }
+
+    func resetTimeline(_ model: AppModel) {
+        guard !busy, missing.isEmpty else { return }
+        layoutAll()
+        commitEdit(model)
+    }
+
+    /// Writes one dry WAV per lane plus the mix into `folder`, named after the scene.
+    func exportStems(_ model: AppModel, to folder: URL) async {
+        guard !clips.isEmpty, missing.isEmpty else { return }
+        mixing = true
+        defer { mixing = false }
+        status = "Exporting stems"
+        do {
+            let data = try await StudioAPI.post("cast/mix", fields: ["clips": try Self.json(mixClips()), "room": room, "stems": "true"])
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let mix = json["output"] as? String, let stems = json["stems"] as? [String: String] else {
+                throw StudioAPI.Failure(message: "The engine returned an unreadable response.")
+            }
+            let base = (sceneName.isEmpty ? defaultSceneName : sceneName).replacingOccurrences(of: "/", with: "-")
+            let fm = FileManager.default
+            func place(_ source: String, _ label: String) throws {
+                let target = folder.appendingPathComponent("\(base) - \(label).wav")
+                if fm.fileExists(atPath: target.path) { try fm.removeItem(at: target) }
+                try fm.moveItem(at: URL(fileURLWithPath: source), to: target)
+            }
+            for lane in lanes { if let path = stems[lane] { try place(path, lane.localizedCapitalized) } }
+            try place(mix, "Mix")
+            if let temp = json["stems_folder"] as? String { try? fm.removeItem(atPath: temp) }
+            status = "Exported \(stems.count) stems and the mix"
+            model.reveal(folder)
+        } catch {
+            status = "Could not export stems: \(error.localizedDescription)"
+        }
     }
 }

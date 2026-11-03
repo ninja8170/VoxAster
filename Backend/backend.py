@@ -568,7 +568,7 @@ async def cast_assemble(paths: str = Form(...), gap_ms: int = Form(350), room: s
 # Cast "Together" engine: MOSS-TTSD in its own worker process (moss_engine.py)
 # ---------------------------------------------------------------------------
 from moss_engine import MossEngine, MossUnavailable
-from studio_tools import moss_script, moss_token_budget
+from studio_tools import moss_script, moss_token_budget, line_slices, mix_timeline
 
 MOSS = MossEngine(DATA_ROOT)
 MOSS_PASS_SCORE = 90
@@ -639,7 +639,9 @@ async def cast_moss(lines: str = Form(...), seed: int = Form(0), check: bool = F
                 if check:
                     transcript, words, wav = asr_words(out)
                     report = take_report(script, words, wav, 16000)
-                    result.update(score=int(report["score"]), transcript=transcript)
+                    texts = [" ".join(str(i["text"]).split()) for i in items]
+                    result.update(score=int(report["score"]), transcript=transcript,
+                                  segments=[list(s) for s in line_slices(texts, words, result["duration"])])
                 if not result["stop_reached"]:
                     result["score"] = min(result["score"], 50)  # ran out of budget: the end is cut off
                 if best is None or result["score"] > best["score"]:
@@ -660,6 +662,58 @@ async def cast_moss(lines: str = Form(...), seed: int = Form(0), check: bool = F
             discard(path)
         for path in prepared:
             Path(path).unlink(missing_ok=True)
+
+
+@app.post("/cast/mix")
+async def cast_mix(clips: str = Form(...), room: str = Form("dry"), stems: bool = Form(False)):
+    """Builds the scene master from timeline clips: each is a slice of a rendered take
+    (src_in..src_out) placed at `at` seconds on its lane, with optional gain, cut-off
+    and talk-over duck. With stems, also writes one dry WAV per lane, all the same length."""
+    try:
+        items = json.loads(clips)
+    except ValueError as exc:
+        raise HTTPException(422, "clips must be a JSON list.") from exc
+    if not isinstance(items, list) or not 1 <= len(items) <= 800 or not all(isinstance(i, dict) for i in items):
+        raise HTTPException(422, "Send 1–800 clips.")
+    if room not in ROOMS:
+        raise HTTPException(422, f"Unknown room. Choose one of: {', '.join(ROOMS)}.")
+    try:
+        parsed = []
+        for item in items:
+            src_in, src_out, at = float(item.get("src_in", 0)), float(item["src_out"]), float(item["at"])
+            if not (0 <= src_in < src_out and 0 <= at <= 3600):
+                raise ValueError
+            lane = str(item.get("lane", "")).strip()[:40] or "Lane"
+            optional = {k: (float(item[k]) if item.get(k) is not None else None) for k in ("cut_at", "duck_from")}
+            parsed.append(dict(path=output_file(item["path"]), src_in=src_in, src_out=src_out, at=at,
+                               lane=lane, gain_db=float(np.clip(float(item.get("gain_db", 0)), -24, 12)), **optional))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(422, "Each clip needs a path, src_in < src_out and a start between 0 and 3600 s.") from exc
+
+    def work():
+        cache, ready = {}, []
+        for c in parsed:
+            if c["path"] not in cache:
+                audio, sr = read_audio(c["path"])
+                if sr != 24000:
+                    raise ValueError("Timeline clips must be VoxAster 24 kHz takes.")
+                cache[c["path"]] = audio
+            audio = cache[c["path"]]
+            ready.append(dict(c, audio=audio[int(c["src_in"] * 24000):int(c["src_out"] * 24000)]))
+        master, lanes = mix_timeline(ready, 24000, room, stems)
+        result = {"output": save_audio([master]), "duration": round(len(master) / 24000, 3)}
+        if stems:
+            folder = OUTPUT_DIR / f"stems-{uuid.uuid4().hex[:8]}"
+            folder.mkdir(parents=True)
+            result["stems"] = {}
+            for lane, audio in lanes.items():
+                name = re.sub(r"[^\w -]", "", lane).strip() or "lane"
+                path = folder / f"{name}.wav"
+                sf.write(str(path), audio, 24000)
+                result["stems"][lane] = str(path)
+            result["stems_folder"] = str(folder)
+        return result
+    return await run_in_threadpool(work)
 
 
 # Performance productions use a distinct, strict app-level route. No raw

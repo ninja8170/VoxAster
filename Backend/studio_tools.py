@@ -478,3 +478,116 @@ def moss_script(lines):
 def moss_token_budget(text):
     """Generation rows to allow: MOSS emits ~12.5 rows per second of speech, speech runs ~15 chars/s."""
     return int(min(2400, max(320, len(text) * 2)))
+
+
+# ---------------------------------------------------------------------------
+# Cast timeline: per-line clips, interruptions, mix and stems
+# ---------------------------------------------------------------------------
+
+CUT_FADE = 0.12      # a cut-off line fades out over this long, ending at cut_at
+DUCK_DB = -8.0       # a talked-over line drops by this much from duck_from
+DUCK_RAMP = 0.08
+CLIP_FADE = 0.008    # every clip edge, so trims never click
+
+
+def line_slices(texts, heard, duration):
+    """Where each script line sits in one rendered passage.
+
+    texts: the passage's lines in order; heard: Whisper words [(text, t0, t1)].
+    Returns [(start, end)] covering the passage: cuts fall midway between one
+    line's last word and the next line's first word. Lines Whisper didn't time
+    are spread by text length between their timed neighbours."""
+    if not texts:
+        return []
+    counts = [len(script_tokens(t)) for t in texts]
+    _, aligned, _ = align(" ".join(texts), heard)
+    spans, k = [], 0
+    for n in counts:
+        times = [(a["t0"], a["t1"]) for a in aligned[k:k + n] if a["t0"] is not None and a["t1"] is not None]
+        spans.append((min(t[0] for t in times), max(t[1] for t in times)) if times else None)
+        k += n
+    # Fill untimed lines proportionally between known neighbours.
+    weights = [max(1, len(t)) for t in texts]
+    i = 0
+    while i < len(spans):
+        if spans[i] is not None:
+            i += 1
+            continue
+        j = i
+        while j < len(spans) and spans[j] is None:
+            j += 1
+        lo = spans[i - 1][1] if i > 0 else 0.0
+        hi = spans[j][0] if j < len(spans) else duration
+        total = sum(weights[i:j])
+        t = lo
+        for m in range(i, j):
+            step = (hi - lo) * weights[m] / total
+            spans[m] = (t, t + step)
+            t += step
+        i = j
+    cuts = [0.0]
+    for a, b in zip(spans, spans[1:]):
+        cuts.append(b[0] if a[1] >= b[0] else (a[1] + b[0]) / 2)
+    cuts.append(duration)
+    return [(round(max(0.0, cuts[i]), 3), round(min(duration, max(cuts[i], cuts[i + 1])), 3)) for i in range(len(texts))]
+
+
+def _ramp(n):
+    return np.linspace(0, 1, max(1, n), dtype=np.float32)
+
+
+def shape_clip(audio, sr, at, gain_db=0.0, cut_at=None, duck_from=None):
+    """Clip edges, gain, cut-off fade and talk-over duck, in timeline seconds."""
+    audio = np.asarray(audio, dtype=np.float32) * np.float32(10 ** (gain_db / 20))
+    n = len(audio)
+    if not n:
+        return audio
+    f = min(n // 2, int(CLIP_FADE * sr))
+    if f:
+        audio[:f] *= _ramp(f)
+        audio[-f:] *= _ramp(f)[::-1]
+    if duck_from is not None:
+        i = int((duck_from - at) * sr)
+        if i < n:
+            i = max(0, i)
+            r = min(n - i, int(DUCK_RAMP * sr))
+            low = np.float32(10 ** (DUCK_DB / 20))
+            audio[i:i + r] *= 1 - (1 - low) * _ramp(r)
+            audio[i + r:] *= low
+    if cut_at is not None:
+        end = int((cut_at - at) * sr)
+        if end < n:
+            end = max(0, end)
+            r = min(end, int(CUT_FADE * sr))
+            if r:
+                audio[end - r:end] *= _ramp(r)[::-1]
+            audio[end:] = 0
+    return audio
+
+
+def mix_timeline(clips, sr, room="dry", stems=False):
+    """clips: dicts with audio (already sliced), at, lane, gain_db, cut_at, duck_from.
+    Voices are level-matched (when a room is used) and share one room.
+    Returns (master, {lane: dry stem}) with every stem the master's length."""
+    if room not in ROOMS:
+        raise ValueError(f"Unknown room {room!r}.")
+    if not clips:
+        raise ValueError("The timeline is empty.")
+    length = max(int(round(c["at"] * sr)) + len(c["audio"]) for c in clips)
+    lanes = {}
+    for c in clips:
+        audio = mono(c["audio"])
+        if ROOMS[room] is not None:
+            audio = match_level(audio, sr)
+        audio = shape_clip(audio, sr, c["at"], c.get("gain_db", 0.0), c.get("cut_at"), c.get("duck_from"))
+        start = int(round(c["at"] * sr))
+        lane = lanes.setdefault(c["lane"], np.zeros(length, dtype=np.float32))
+        lane[start:start + len(audio)] += audio
+    master = apply_room(sum((v for v in lanes.values()), np.zeros(length, dtype=np.float32)), sr, room)
+    peak = float(np.max(np.abs(master))) if master.size else 0.0
+    if peak > SCENE_CEILING:
+        master *= SCENE_CEILING / peak
+    if not stems:
+        return master.astype(np.float32), {}
+    pad = len(master) - length
+    return master.astype(np.float32), {k: np.pad(v, (0, pad)) for k, v in lanes.items()}

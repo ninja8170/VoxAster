@@ -294,11 +294,22 @@ struct CastSheet: View {
 struct CastPanel: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var cast: CastStore
+    @EnvironmentObject var ui: StudioUI
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
                 SectionLabel("Scene", trailing: cast.status.isEmpty ? nil : cast.status)
+                if !cast.clips.isEmpty && !cast.busy {
+                    Button {
+                        ui.sceneEditor = true
+                    } label: {
+                        Label("Open Scene Editor", systemImage: "rectangle.split.3x1")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .help("Edit the scene on a full-window timeline: move, trim, overlap and level every line")
+                }
                 if cast.busy {
                     Button("Stop") { cast.cancel() }.controlSize(.small)
                 } else if !cast.missing.isEmpty, !cast.lines.isEmpty {
@@ -312,7 +323,7 @@ struct CastPanel: View {
                     Button("Join Again") { cast.rejoin(model) }
                         .controlSize(.small)
                         .disabled(!cast.canRetry(model))
-                        .help("Join the rendered lines again with the current gap and room, without re-rendering")
+                        .help("Mix the timeline again with the current room, without re-rendering")
                 }
             }
             .padding(.horizontal, 14).padding(.vertical, 9)

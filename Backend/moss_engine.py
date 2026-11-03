@@ -96,13 +96,15 @@ class MossEngine:
 
     def render(self, text, prompts, output, seed=0, max_new_tokens=1200):
         """prompts: {speaker number: reference wav path}. Writes `output`; returns the worker's reply."""
+        return self._ask(dict(text=text, prompts={str(k): str(v) for k, v in prompts.items()},
+                              output=str(output), seed=int(seed), max_new_tokens=int(max_new_tokens)))
+
+    def _ask(self, request):
         with self.lock:
             if not self.running():
                 self._start()
             request_id = uuid.uuid4().hex
-            self.process.stdin.write(json.dumps(dict(
-                id=request_id, text=text, prompts={str(k): str(v) for k, v in prompts.items()},
-                output=str(output), seed=int(seed), max_new_tokens=int(max_new_tokens))) + "\n")
+            self.process.stdin.write(json.dumps(dict(request, id=request_id)) + "\n")
             self.process.stdin.flush()
             reply = self._next(RENDER_TIMEOUT, "rendering")
             if reply.get("id") != request_id:

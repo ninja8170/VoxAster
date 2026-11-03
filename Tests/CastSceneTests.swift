@@ -71,3 +71,30 @@ extension Phase1Tests {
         check(line.speaker == "ANNA · BEN" && line.text == "ANNA: Hi.\nBEN: Yo.\nANNA: So." && line.parts?.count == 3, "passage row shows its lines")
     }
 }
+
+extension Phase1Tests {
+    static func castTimelineTests() {
+        let cut = CastStore.cue("I was going to say--"), over = CastStore.cue(">> No, listen!"), plain = CastStore.cue("Hello.")
+        check(cut.text == "I was going to say—" && cut.cut && !cut.over, "-- marks a cut-off line and becomes a dash")
+        check(over.text == "No, listen!" && over.over && !over.cut, ">> marks a talk-over and is removed")
+        check(plain.text == "Hello." && !plain.cut && !plain.over, "plain lines are untouched")
+        check(CastStore.cue("Wait—").cut, "an em dash also cuts off")
+
+        typealias Clip = CastStore.Clip
+        func clip(_ unit: Int, _ part: Int, _ lane: String, _ a: Double, _ b: Double, cut: Bool = false, over: Bool = false) -> Clip {
+            Clip(unit: unit, part: part, lane: lane, text: "", srcIn: a, srcOut: b, start: a, cut: cut, over: over)
+        }
+        // Line by line: 2 s, 1 s, 3 s with a 0.5 s gap.
+        var laid = CastStore.layout([[clip(0, 0, "A", 0, 2)], [clip(1, 0, "B", 0, 1)], [clip(2, 0, "A", 0, 3)]], gap: 0.5)
+        check(laid.map(\.start) == [0, 2.5, 4.0], "lines follow each other with the gap")
+        // A is cut off: B overlaps A's last 0.25 s. Then C talks over B: starts 0.8 s before B ends.
+        laid = CastStore.layout([[clip(0, 0, "A", 0, 2, cut: true)], [clip(1, 0, "B", 0, 2)], [clip(2, 0, "C", 0, 1, over: true)]], gap: 0.5)
+        check(abs(laid[1].start - 1.75) < 1e-9, "a cut-off line is overlapped by the next")
+        check(abs(laid[2].start - (laid[1].end - 0.8)) < 1e-9, "a >> line comes in before the previous ends")
+        // Together passage keeps MOSS's spacing; the next unit follows after the gap.
+        laid = CastStore.layout([[clip(0, 0, "A", 0, 1.2), clip(0, 1, "B", 1.2, 2.0)], [clip(1, 0, "A", 0, 1)]], gap: 0.4)
+        check(laid.map(\.start) == [0, 1.2, 2.4], "passage parts keep their own timing")
+        let split = CastStore.proportionalSlices(["ab", "abcd"], 3)
+        check(split.count == 2 && abs(split[0][1] - 1) < 1e-9 && abs(split[1][1] - 3) < 1e-9, "untimed passages split by text length")
+    }
+}

@@ -270,6 +270,7 @@ struct Phase1Tests {
         try runtimeSetupTests()
         try castSceneTests()
         castPassageTests()
+        castTimelineTests()
         print("PASS: \(checks) Swift UI/request assertions across Clone, Design, Variants, Long Form, Retry, Engine Lab and Performance")
     }
 }

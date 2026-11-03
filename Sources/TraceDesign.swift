@@ -253,7 +253,8 @@ final class TraceCache {
 
 enum TraceLoader {
     static func envelope(url: URL, buckets: Int = 600, maxSeconds: Double? = nil) async -> TraceEnvelope? {
-        let key = maxSeconds.map { url.appendingPathExtension("head\(Int($0))") } ?? url
+        let key = maxSeconds.map { url.appendingPathExtension("head\(Int($0))") }
+            ?? (buckets == 600 ? url : url.appendingPathExtension("b\(buckets)"))
         if let cached = await TraceCache.shared.get(key) { return cached }
         let result: TraceEnvelope? = await Task.detached(priority: .utility) {
             guard let file = try? AVAudioFile(forReading: url) else { return nil }
