@@ -272,6 +272,7 @@ struct Phase1Tests {
         castPassageTests()
         castTimelineTests()
         try sceneEditorTests()
+        try exportAndPaceTests()
         print("PASS: \(checks) Swift UI/request assertions across Clone, Design, Variants, Long Form, Retry, Engine Lab and Performance")
     }
 }

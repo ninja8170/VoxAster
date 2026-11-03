@@ -413,10 +413,12 @@ struct CastInspector: View {
                         help: "Silence inserted between consecutive lines in the joined scene")
             VStack(alignment: .leading, spacing: 6) {
                 Text("Room").font(.traceCaption).foregroundStyle(Trace.graphite)
+                // A menu, not segments: four segments were wider than the inspector's 360 pt maximum,
+                // which made the inspector oscillate and AppKit abort on opening Cast (2026-11-03).
                 Picker("Room", selection: $cast.room) {
                     ForEach(CastStore.rooms, id: \.id) { Text($0.name).tag($0.id) }
                 }
-                .pickerStyle(.segmented).labelsHidden()
+                .pickerStyle(.menu).labelsHidden().fixedSize()
                 Text(cast.room == "dry"
                      ? "Lines are joined exactly as rendered."
                      : "Voices are evened out to one level and placed in the same space, with quiet room tone under the gaps.")

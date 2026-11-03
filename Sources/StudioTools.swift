@@ -306,7 +306,11 @@ final class CastStore: ObservableObject {
         var engine: String?; var designRefs: [String: String]?
         var clips: [Clip]?
         var tracks: Tracks?
+        var markers: [Marker]?
     }
+
+    /// A named point on the Scene Editor's ruler.
+    struct Marker: Codable, Identifiable, Equatable { var id = UUID(); var t: Double; var name: String }
 
     /// Per-lane mix controls in the Scene Editor (Audacity-style track panel).
     struct Tracks: Codable, Equatable {
@@ -332,6 +336,7 @@ final class CastStore: ObservableObject {
         var designRefs: [String: String]? = nil   // file names in the scene folder
         var clips: [Clip]? = nil
         var tracks: Tracks? = nil
+        var markers: [Marker]? = nil
     }
 
     /// Designed cast voices: plain descriptors the engine accepts.
@@ -367,6 +372,7 @@ final class CastStore: ObservableObject {
     @Published private(set) var clips: [Clip] = [] { didSet { if !liveEdit { save() } } }
     @Published private(set) var mixing = false
     @Published var tracks = Tracks() { didSet { save() } }
+    @Published var markers: [Marker] = [] { didSet { save() } }
     private var liveEdit = false
     private var masterIsEdit = false
     private var remixTask: Task<Void, Never>?
@@ -404,6 +410,7 @@ final class CastStore: ObservableObject {
         masterURL = saved?.master.map { URL(fileURLWithPath: $0) }.flatMap { Self.exists($0) ? $0 : nil }
         clips = (saved?.clips ?? []).filter { $0.unit < lines.count }
         tracks = saved?.tracks ?? Tracks()
+        markers = saved?.markers ?? []
         restoring = false
         loadScenes()
     }
@@ -435,7 +442,7 @@ final class CastStore: ObservableObject {
         let draft = Saved(script: script, assignments: assignments, gapMs: gapMs, room: room,
                           lines: lines.map { Self.stored($0, path: $0.output?.path) },
                           master: masterURL?.path, sceneID: sceneID, sceneName: sceneName,
-                          engine: engine, designRefs: designRefs.mapValues(\.path), clips: clips, tracks: tracks)
+                          engine: engine, designRefs: designRefs.mapValues(\.path), clips: clips, tracks: tracks, markers: markers)
         guard let data = try? JSONEncoder().encode(draft) else { return }
         try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? data.write(to: file, options: .atomic)
@@ -849,7 +856,7 @@ final class CastStore: ObservableObject {
             let scene = Scene(id: id, name: name, script: script, assignments: assignments, gapMs: gapMs, room: room,
                               lines: stored, master: masterName,
                               createdAt: scenes.first { $0.id == id }?.createdAt ?? now, updatedAt: now,
-                              engine: engine, designRefs: refNames, clips: clips, tracks: tracks)
+                              engine: engine, designRefs: refNames, clips: clips, tracks: tracks, markers: markers)
             try JSONEncoder().encode(scene).write(to: folder.appendingPathComponent("scene.json"), options: .atomic)
             // Drop superseded line files (e.g. a line that was rendered again).
             for item in (try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
@@ -882,6 +889,7 @@ final class CastStore: ObservableObject {
         lines = scene.lines.map { Self.line($0, folder: folder) }
         clips = (scene.clips ?? []).filter { $0.unit < lines.count }
         tracks = scene.tracks ?? Tracks()
+        markers = scene.markers ?? []
         if clips.isEmpty && missing.isEmpty && !lines.isEmpty { layoutAll() }
         markBaseline()
         masterURL = scene.master.map { folder.appendingPathComponent($0) }.flatMap { Self.exists($0) ? $0 : nil }
@@ -926,6 +934,7 @@ final class CastStore: ObservableObject {
         lines = []
         clips = []
         tracks = Tracks()
+        markers = []
         masterURL = nil
         sceneID = nil
         sceneName = ""
@@ -951,6 +960,8 @@ extension CastStore {
         var gainDb: Double = 0
         var cut = false          // cut off by the next line
         var over = false         // talks over the previous line
+        var fadeIn: Double? = nil    // seconds; optional so older saved timelines still load
+        var fadeOut: Double? = nil
         var length: Double { srcOut - srcIn }
         var end: Double { start + length }
     }
@@ -1051,7 +1062,8 @@ extension CastStore {
     fileprivate func mixClips() -> [[String: Any]] {
         var items: [[String: Any]] = clips.map { clip in
             ["path": lines[clip.unit].output?.path ?? "", "src_in": clip.srcIn, "src_out": clip.srcOut,
-             "at": clip.start, "lane": clip.lane, "gain_db": clip.gainDb + (tracks.gain[clip.lane] ?? 0)]
+             "at": clip.start, "lane": clip.lane, "gain_db": clip.gainDb + (tracks.gain[clip.lane] ?? 0),
+             "fade_in": clip.fadeIn ?? 0, "fade_out": clip.fadeOut ?? 0]
         }
         for i in clips.indices.dropFirst() {
             if clips[i].over { items[i - 1]["duck_from"] = clips[i].start }
@@ -1155,19 +1167,19 @@ extension CastStore {
 // MARK: - Scene Editor: history, snapping, text edits, checks
 
 extension CastStore {
-    struct Snapshot: Equatable { var clips: [Clip]; var tracks: Tracks }
+    struct Snapshot: Equatable { var clips: [Clip]; var tracks: Tracks; var markers: [Marker] }
 
     /// The timeline as it is now becomes the starting point; earlier history no longer applies
     /// (after a render, re-render or opening a scene the clips point at different audio).
     func markBaseline() {
-        baseline = Snapshot(clips: clips, tracks: tracks)
+        baseline = Snapshot(clips: clips, tracks: tracks, markers: markers)
         undoStack.removeAll()
         redoStack.removeAll()
         canUndo = false; canRedo = false
     }
 
     fileprivate func recordHistory() {
-        let now = Snapshot(clips: clips, tracks: tracks)
+        let now = Snapshot(clips: clips, tracks: tracks, markers: markers)
         if let baseline, baseline != now {
             undoStack.append(baseline)
             if undoStack.count > 200 { undoStack.removeFirst() }
@@ -1179,19 +1191,20 @@ extension CastStore {
 
     func undo(_ model: AppModel) {
         guard !busy, let previous = undoStack.popLast() else { return }
-        redoStack.append(Snapshot(clips: clips, tracks: tracks))
+        redoStack.append(Snapshot(clips: clips, tracks: tracks, markers: markers))
         restore(previous, model)
     }
 
     func redo(_ model: AppModel) {
         guard !busy, let next = redoStack.popLast() else { return }
-        undoStack.append(Snapshot(clips: clips, tracks: tracks))
+        undoStack.append(Snapshot(clips: clips, tracks: tracks, markers: markers))
         restore(next, model)
     }
 
     private func restore(_ snapshot: Snapshot, _ model: AppModel) {
         clips = snapshot.clips
         tracks = snapshot.tracks
+        markers = snapshot.markers
         baseline = snapshot
         canUndo = !undoStack.isEmpty; canRedo = !redoStack.isEmpty
         save()
@@ -1361,5 +1374,104 @@ extension CastStore {
     func issues(for clip: Clip) -> [Issue] {
         (lines[safe: clip.unit]?.issues ?? []).filter { $0.t >= clip.srcIn - 0.02 && $0.t < clip.srcOut }
             .map { Issue(t: $0.t - clip.srcIn, word: $0.word, heard: $0.heard) }
+    }
+}
+
+
+// MARK: - Scene Editor: pace, subtitles, loudness, markers
+
+extension CastStore {
+    /// Every gap between one line and the next (in script order) scaled by `factor`; overlaps —
+    /// interruptions and talk-overs — keep their exact amount.
+    nonisolated static func paced(_ clips: [Clip], factor: Double) -> [Clip] {
+        guard var previous = clips.first else { return clips }
+        var out = [previous]
+        var shift = 0.0
+        for var clip in clips.dropFirst() {
+            let gap = clip.start - previous.end   // measured on the original positions
+            previous = clip
+            if gap > 0 { shift += gap * (factor - 1) }
+            clip.start = max(0, clip.start + shift)
+            out.append(clip)
+        }
+        return out
+    }
+
+    /// Live preview while the Pace slider moves: no history, no mix.
+    func previewClips(_ preview: [Clip]) {
+        liveEdit = true
+        clips = preview
+        liveEdit = false
+    }
+
+    // MARK: Subtitles
+
+    enum SubtitleFormat: String { case srt, vtt }
+
+    /// One cue per audible clip, in time order, labelled with the speaker. Cut-off lines end
+    /// where the next line takes over.
+    nonisolated static func subtitles(_ clips: [Clip], format: SubtitleFormat) -> String {
+        func stamp(_ t: Double) -> String {
+            let ms = Int((max(0, t) * 1000).rounded())
+            let h = ms / 3_600_000, m = ms / 60_000 % 60, s = ms / 1000 % 60, f = ms % 1000
+            return String(format: format == .srt ? "%02d:%02d:%02d,%03d" : "%02d:%02d:%02d.%03d", h, m, s, f)
+        }
+        var ends: [UUID: Double] = [:]
+        for (i, clip) in clips.enumerated() {
+            ends[clip.id] = clip.end
+            if clip.cut, i + 1 < clips.count { ends[clip.id] = min(clip.end, clips[i + 1].start + cutOverlap) }
+        }
+        let ordered = clips.sorted { $0.start < $1.start }
+        var text = format == .vtt ? "WEBVTT\n\n" : ""
+        for (n, clip) in ordered.enumerated() {
+            let speaker = clip.lane.localizedCapitalized
+            let words = clip.text.replacingOccurrences(of: "\n", with: " ")
+            if format == .srt { text += "\(n + 1)\n" }
+            text += "\(stamp(clip.start)) --> \(stamp(ends[clip.id] ?? clip.end))\n"
+            text += format == .srt ? "\(speaker): \(words)\n\n" : "<v \(speaker)>\(words)\n\n"
+        }
+        return text
+    }
+
+    /// Subtitles for what's heard: muted (or un-soloed) tracks are left out.
+    func subtitleText(_ format: SubtitleFormat) -> String {
+        Self.subtitles(clips.filter { isAudible($0.lane) }, format: format)
+    }
+
+    // MARK: Loudness
+
+    static let loudnessTargets: [(name: String, lufs: Double)] = [("Podcast", -16), ("YouTube", -14), ("Broadcast", -23)]
+
+    /// A copy of the master normalised to `lufs`, for export.
+    func loudnessCopy(_ lufs: Double) async throws -> URL {
+        guard let master = masterURL else { throw StudioAPI.Failure(message: "Mix the scene first.") }
+        status = "Matching \(Int(lufs)) LUFS"
+        let data = try await StudioAPI.post("audio/loudness", fields: ["path": master.path, "target": String(lufs)])
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any], let path = json["output"] as? String else {
+            throw StudioAPI.Failure(message: "The engine returned an unreadable response.")
+        }
+        let before = json["before"] as? Double ?? 0, after = json["after"] as? Double ?? lufs
+        status = String(format: "Mix at %.1f LUFS (was %.1f)", after, before)
+        return URL(fileURLWithPath: path)
+    }
+
+    // MARK: Markers
+
+    func addMarker(at t: Double, _ model: AppModel) {
+        markers.append(Marker(t: max(0, t), name: "Marker \(markers.count + 1)"))
+        markers.sort { $0.t < $1.t }
+        commitEdit(model)
+    }
+
+    func renameMarker(_ id: UUID, to name: String, _ model: AppModel) {
+        guard let i = markers.firstIndex(where: { $0.id == id }) else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        markers[i].name = trimmed.isEmpty ? markers[i].name : trimmed
+        commitEdit(model)
+    }
+
+    func deleteMarker(_ id: UUID, _ model: AppModel) {
+        markers.removeAll { $0.id == id }
+        commitEdit(model)
     }
 }

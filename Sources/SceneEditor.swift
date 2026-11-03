@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 /// The full-window Scene Editor, laid out like Audacity: one toolbar (transport, time, zoom,
 /// room and scene actions), the tracks filling the window, and a selection bar for the clip.
@@ -14,6 +15,13 @@ struct SceneEditor: View {
     @State private var editing: CastStore.Clip?
     @State private var draft = ""
     @FocusState private var focused: Bool
+    @State private var loop: ClosedRange<Double>?
+    @State private var looping = false
+    @State private var renaming: CastStore.Marker?
+    @State private var markerName = ""
+    @State private var paceOpen = false
+    @State private var pace = 1.0
+    @State private var paceBase: [CastStore.Clip]?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,11 +32,14 @@ struct SceneEditor: View {
                           detail: cast.busy ? "Rendering…" : "Render the scene, or Retry Failed to finish it.")
             } else {
                 CastTimeline(player: player, selection: $selection, pps: $pps, fitToken: fitToken,
-                             onEdit: { clip in draft = clip.text; editing = clip })
+                             onEdit: { clip in draft = clip.text; editing = clip },
+                             onRenameMarker: { marker in markerName = marker.name; renaming = marker },
+                             loop: $loop)
             }
             Rectangle().fill(Trace.rule).frame(height: 1)
             selectionBar
         }
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         .background(Trace.ground)
         .onExitCommand { ui.sceneEditor = false }
         .focusable()
@@ -37,7 +48,43 @@ struct SceneEditor: View {
         .onAppear { focused = true }
         .onChange(of: selection) { _, _ in focused = true }
         .onKeyPress(keys: [.leftArrow, .rightArrow, .tab, .home, .end]) { press in key(press) }
+        .onKeyPress(characters: CharacterSet(charactersIn: "mMlL")) { press in
+            guard press.modifiers.isEmpty || press.modifiers == .shift else { return .ignored }
+            if press.characters.lowercased() == "m" { cast.addMarker(at: position, model) } else { toggleLoop() }
+            return .handled
+        }
+        .onChange(of: player.currentTime) { _, t in
+            // Loop playback: back to the start of the region whenever the playhead leaves it.
+            guard looping, let loop, let master = cast.masterURL, player.isPlaying(master),
+                  t >= loop.upperBound || t < loop.lowerBound - 0.25 else { return }
+            player.seek(master, to: loop.lowerBound)
+        }
+        .onChange(of: loop) { _, region in if region == nil { looping = false } else if !looping { looping = true } }
         .sheet(item: $editing) { clip in editSheet(clip) }
+        .sheet(item: $renaming) { marker in
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Rename Marker").font(.traceSection)
+                TextField("Name", text: $markerName).frame(width: 280)
+                    .onSubmit { cast.renameMarker(marker.id, to: markerName, model); renaming = nil }
+                HStack {
+                    Button("Delete Marker", role: .destructive) { cast.deleteMarker(marker.id, model); renaming = nil }
+                    Spacer()
+                    Button("Cancel", role: .cancel) { renaming = nil }.keyboardShortcut(.cancelAction)
+                    Button("Rename") { cast.renameMarker(marker.id, to: markerName, model); renaming = nil }
+                        .keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(20)
+        }
+    }
+
+    private func toggleLoop() {
+        if loop == nil {
+            // No region yet: loop the selected clip, or the next 4 s from the playhead.
+            if let clip = selected { loop = clip.start...clip.end } else { loop = position...(position + 4) }
+        } else {
+            looping.toggle()
+        }
     }
 
     // MARK: Keys
@@ -105,13 +152,30 @@ struct SceneEditor: View {
 
     // MARK: Toolbar
 
+    /// The left of the toolbar scrolls sideways when the window is narrow; scene actions and Done
+    /// stay pinned on the right. Nothing here may set a minimum width: a toolbar wider than the
+    /// window made AppKit loop on layout and abort (crash on opening Cast, 2026-11-03).
     private var toolbar: some View {
         HStack(spacing: 10) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) { transport }.padding(.vertical, 2)
+            }
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+            sceneActions
+        }
+        .controlSize(.regular)
+        .padding(.horizontal, 14).padding(.vertical, 8)
+        .background(Trace.sheet)
+    }
+
+    @ViewBuilder private var transport: some View {
             transportButton("backward.end.fill", "Go to start") {
                 if let master = cast.masterURL { player.seek(master, to: 0) }
             }
             Button {
-                if let master = cast.masterURL { player.toggle(master) }
+                guard let master = cast.masterURL else { return }
+                if looping, let loop, !playing, !loop.contains(position) { player.seek(master, to: loop.lowerBound) }
+                player.toggle(master)
             } label: {
                 Image(systemName: playing ? "pause.fill" : "play.fill")
                     .font(.system(size: 15)).frame(width: 34, height: 28)
@@ -131,6 +195,15 @@ struct SceneEditor: View {
                 .background(Trace.sheet, in: RoundedRectangle(cornerRadius: 6))
                 .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Trace.rule, lineWidth: 0.5))
             Text("/ \(timecode(cast.timelineDuration, tenths: true))").font(.traceValue).foregroundStyle(Trace.graphite)
+            Button { toggleLoop() } label: {
+                Image(systemName: "repeat").font(.system(size: 13)).frame(width: 26, height: 26)
+                    .foregroundStyle(looping ? Color.white : Trace.ink)
+                    .background(looping ? Trace.cobaltFill : Color.clear, in: RoundedRectangle(cornerRadius: 5))
+            }
+            .buttonStyle(.plain)
+            .help("Loop the region (L). Drag on the ruler to set it; with none, L loops the selected clip.")
+            .contextMenu { Button("Clear Loop Region") { loop = nil } }
+            transportButton("flag", "Add a marker at the playhead (M)") { cast.addMarker(at: position, model) }
             divider
             transportButton("arrow.uturn.backward", "Undo (⌘Z)") { cast.undo(model) }
                 .keyboardShortcut("z", modifiers: .command)
@@ -144,18 +217,29 @@ struct SceneEditor: View {
             transportButton("plus.magnifyingglass", "Zoom in (⌘+)") { pps = min(400, pps * 1.4) }
                 .keyboardShortcut("=", modifiers: .command)
             transportButton("arrow.left.and.right.square", "Fit the scene to the window") { fitToken += 1 }
+            Button { openPace() } label: {
+                Image(systemName: "metronome").font(.system(size: 13)).frame(width: 26, height: 26).foregroundStyle(Trace.ink)
+            }
+            .buttonStyle(.borderless)
+            .help("Pace: tighten or loosen every gap at once")
+            .disabled(cast.clips.count < 2 || cast.busy)
+            .popover(isPresented: $paceOpen, arrowEdge: .bottom) { pacePopover }
             divider
+
+            if cast.mixing { ProgressView().controlSize(.small) }
+    }
+
+    @ViewBuilder private var sceneActions: some View {
             Picker("Room", selection: $cast.room) {
                 ForEach(CastStore.rooms, id: \.id) { Text($0.name).tag($0.id) }
             }
-            .pickerStyle(.segmented).labelsHidden().fixedSize()
-            .help("The shared space every voice is placed in")
+            .pickerStyle(.menu).fixedSize()
+            .help("Room: the shared space every voice is placed in")
             .onChange(of: cast.room) { _, _ in cast.commitEdit(model) }
-            if cast.mixing { ProgressView().controlSize(.small) }
-            Spacer(minLength: 8)
             Text(cast.sceneName.isEmpty ? cast.defaultSceneName : cast.sceneName)
                 .font(.system(size: 13, design: .serif)).foregroundStyle(Trace.graphite).lineLimit(1)
-                .frame(maxWidth: 220, alignment: .trailing)
+                .frame(minWidth: 0, maxWidth: 220, alignment: .trailing)
+                .layoutPriority(-1)
             if !cast.unchecked.isEmpty && cast.missing.isEmpty {
                 Button("Check Lines") { cast.checkAll(model) }
                     .disabled(!cast.canRetry(model))
@@ -168,9 +252,18 @@ struct SceneEditor: View {
                 .disabled(!cast.canRetry(model))
             }
             Menu {
-                Button("Export Mix…") { if let master = cast.masterURL { model.exportOutput(master) } }
-                    .disabled(cast.masterURL == nil)
+                Menu("Export Mix") {
+                    Button("Original Level…") { if let master = cast.masterURL { model.exportOutput(master) } }
+                    Divider()
+                    ForEach(CastStore.loudnessTargets, id: \.lufs) { target in
+                        Button("\(target.name) (\(Int(target.lufs)) LUFS)…") { exportLoud(target.name, target.lufs) }
+                    }
+                }
+                .disabled(cast.masterURL == nil)
                 Button("Export Stems…") { exportStems() }
+                Divider()
+                Button("Export Subtitles (SRT)…") { exportSubtitles(.srt) }
+                Button("Export Subtitles (WebVTT)…") { exportSubtitles(.vtt) }
                 Divider()
                 Button("Reset Timeline") { selection = nil; cast.resetTimeline(model) }
             } label: { Text("Export") }
@@ -181,10 +274,6 @@ struct SceneEditor: View {
             Button("Done") { ui.sceneEditor = false }
                 .keyboardShortcut(.cancelAction)
                 .buttonStyle(.borderedProminent)
-        }
-        .controlSize(.regular)
-        .padding(.horizontal, 14).padding(.vertical, 8)
-        .background(Trace.sheet)
     }
 
     private var divider: some View { Rectangle().fill(Trace.rule).frame(width: 1, height: 22) }
@@ -203,6 +292,20 @@ struct SceneEditor: View {
 
     private var selectionBar: some View {
         HStack(spacing: 14) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 14) { selectionDetails }
+            }
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+            Text("\(cast.clips.count) clips · \(cast.lanes.count) tracks").font(.traceCaption).foregroundStyle(Trace.pencil)
+                .fixedSize()
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.small)
+        .padding(.horizontal, 14).frame(height: 38)
+        .background(Trace.sheet)
+    }
+
+    @ViewBuilder private var selectionDetails: some View {
             if let clip = selected {
                 Text(clip.lane).font(.traceValue.weight(.semibold)).foregroundStyle(Trace.ink)
                 Text(clip.text).font(.system(size: 12, design: .serif)).foregroundStyle(Trace.graphite).lineLimit(1)
@@ -218,6 +321,16 @@ struct SceneEditor: View {
                     Text(String(format: "%+.0f dB", clip.gainDb)).font(.traceValue.monospacedDigit())
                 }
                 .fixedSize().help("Clip level")
+                Stepper(value: Binding(get: { (clip.fadeIn ?? 0) * 1000 }, set: { v in edit(clip) { $0.fadeIn = max(0, min(v / 1000, clip.length / 2)) } }),
+                        in: 0...2000, step: 50) {
+                    Text(String(format: "In %.0f ms", (clip.fadeIn ?? 0) * 1000)).font(.traceValue.monospacedDigit())
+                }
+                .fixedSize().help("Fade in")
+                Stepper(value: Binding(get: { (clip.fadeOut ?? 0) * 1000 }, set: { v in edit(clip) { $0.fadeOut = max(0, min(v / 1000, clip.length / 2)) } }),
+                        in: 0...2000, step: 50) {
+                    Text(String(format: "Out %.0f ms", (clip.fadeOut ?? 0) * 1000)).font(.traceValue.monospacedDigit())
+                }
+                .fixedSize().help("Fade out")
                 Toggle("Cut off", isOn: Binding(get: { clip.cut }, set: { value in edit(clip) { $0.cut = value } }))
                     .toggleStyle(.checkbox)
                     .help("The next line comes in over the end of this one, which fades out under it")
@@ -238,16 +351,9 @@ struct SceneEditor: View {
                     .disabled(!cast.canRetry(model))
                     .help(cast.lines[safe: clip.unit]?.parts == nil ? "Render this line again" : "Render this passage again")
             } else {
-                Text("Click a clip to select it · drag to move, edges to trim (hold ⌘ to stop snapping) · double-click to edit its words · ←/→ nudge · Tab next clip")
+                Text("Click a clip to select it · drag to move, edges to trim (hold ⌘ to stop snapping) · double-click to edit its words · ←/→ nudge · Tab next clip · M marker · L loop")
                     .font(.traceCaption).foregroundStyle(Trace.pencil)
             }
-            Spacer(minLength: 0)
-            Text("\(cast.clips.count) clips · \(cast.lanes.count) tracks").font(.traceCaption).foregroundStyle(Trace.pencil)
-        }
-        .buttonStyle(.borderless)
-        .controlSize(.small)
-        .padding(.horizontal, 14).frame(height: 38)
-        .background(Trace.sheet)
     }
 
     private func field(_ label: String, _ value: String) -> some View {
@@ -262,6 +368,82 @@ struct SceneEditor: View {
     private func edit(_ clip: CastStore.Clip, _ change: (inout CastStore.Clip) -> Void) {
         cast.editClip(clip.id, change)
         cast.commitEdit(model)
+    }
+
+    // MARK: Pace
+
+    private func openPace() {
+        paceBase = cast.clips
+        pace = 1.0
+        paceOpen = true
+    }
+
+    private var pacePopover: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Pace").font(.traceSection)
+            HStack {
+                Text("Tighter").font(.traceCaption).foregroundStyle(Trace.pencil)
+                Slider(value: $pace, in: 0.7...1.4, step: 0.05)
+                    .frame(width: 220)
+                    .onChange(of: pace) { _, value in
+                        if let base = paceBase { cast.previewClips(CastStore.paced(base, factor: value)) }
+                    }
+                Text("Looser").font(.traceCaption).foregroundStyle(Trace.pencil)
+            }
+            Text("Every gap between lines × \(Int((pace * 100).rounded()))%. Interruptions and talk-overs keep their overlap.")
+                .font(.traceCaption).foregroundStyle(Trace.graphite).fixedSize(horizontal: false, vertical: true)
+                .frame(width: 320, alignment: .leading)
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    if let base = paceBase { cast.previewClips(base) }
+                    paceBase = nil
+                    paceOpen = false
+                }
+                Button("Apply") { applyPace() }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(16)
+        .onDisappear { applyPace() }   // clicking away keeps the change, like other popovers
+    }
+
+    private func applyPace() {
+        guard paceBase != nil else { return }
+        paceBase = nil
+        paceOpen = false
+        if pace != 1.0 { cast.commitEdit(model) }
+    }
+
+    // MARK: Export
+
+    private var exportName: String {
+        (cast.sceneName.isEmpty ? cast.defaultSceneName : cast.sceneName).replacingOccurrences(of: "/", with: "-")
+    }
+
+    private func exportLoud(_ name: String, _ lufs: Double) {
+        Task {
+            do {
+                let copy = try await cast.loudnessCopy(lufs)
+                defer { try? FileManager.default.removeItem(at: copy) }
+                let panel = NSSavePanel()
+                panel.allowedContentTypes = [.wav]
+                panel.nameFieldStringValue = "\(exportName) (\(name) \(Int(lufs)) LUFS).wav"
+                panel.canCreateDirectories = true
+                if panel.runModal() == .OK, let destination = panel.url { model.exportAudio(copy, to: destination) }
+            } catch {
+                model.errorMessage = "Could not match loudness: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func exportSubtitles(_ format: CastStore.SubtitleFormat) {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: format.rawValue) ?? .plainText]
+        panel.nameFieldStringValue = "\(exportName).\(format.rawValue)"
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        do { try cast.subtitleText(format).write(to: destination, atomically: true, encoding: .utf8) }
+        catch { model.errorMessage = "Could not save subtitles: \(error.localizedDescription)" }
     }
 
     private func exportStems() {

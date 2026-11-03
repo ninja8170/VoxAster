@@ -166,3 +166,50 @@ extension Phase1Tests {
         check(!cast.canRedo, "a new edit clears redo")
     }
 }
+
+extension Phase1Tests {
+    @MainActor
+    static func exportAndPaceTests() throws {
+        typealias Clip = CastStore.Clip
+        // A: 0–2, B: 2.5–3.5 (0.5 gap), C talks over B: 3.0–4.0 (overlap), D: 5.0–6.0 (1.0 gap).
+        let clips = [Clip(unit: 0, part: 0, lane: "ANNA", text: "Hi.", srcIn: 0, srcOut: 2, start: 0),
+                     Clip(unit: 1, part: 0, lane: "BEN", text: "Hey--", srcIn: 0, srcOut: 1, start: 2.5, cut: true),
+                     Clip(unit: 2, part: 0, lane: "ANNA", text: "Wait.", srcIn: 0, srcOut: 1, start: 3.0, over: true),
+                     Clip(unit: 3, part: 0, lane: "BEN", text: "Okay.", srcIn: 0, srcOut: 1, start: 5.0)]
+        let tight = CastStore.paced(clips, factor: 0.5)
+        check(tight.map(\.start) == [0, 2.25, 2.75, 4.25], "pace halves gaps and keeps overlaps")
+        check(CastStore.paced(clips, factor: 1).map(\.start) == clips.map(\.start), "pace 100% changes nothing")
+        let loose = CastStore.paced(clips, factor: 1.4)
+        check(abs(loose[3].start - 5.6) < 1e-9 && abs(loose[2].start - (loose[1].start + 0.5)) < 1e-9, "looser pace widens gaps only")
+
+        let srt = CastStore.subtitles(clips, format: .srt)
+        check(srt.hasPrefix("1\n00:00:00,000 --> 00:00:02,000\nAnna: Hi.\n\n2\n00:00:02,500 --> 00:00:03,250\nBen: Hey--"),
+              "SRT cues are numbered, speaker-labelled, and a cut-off line ends as the next takes over")
+        let vtt = CastStore.subtitles(clips, format: .vtt)
+        check(vtt.hasPrefix("WEBVTT\n\n00:00:00.000 --> 00:00:02.000\n<v Anna>Hi.\n"), "WebVTT uses voice tags")
+        check(vtt.contains("00:00:05.000 --> 00:00:06.000\n<v Ben>Okay."), "every line becomes a cue")
+
+        // Older saved timelines (before fades) still load.
+        let old = #"{"id":"6F9619FF-8B86-D011-B42D-00C04FC964FF","unit":0,"part":0,"lane":"A","text":"Hi","srcIn":0,"srcOut":1,"start":0,"gainDb":0,"cut":false,"over":false}"#
+        let decoded = try JSONDecoder().decode(Clip.self, from: Data(old.utf8))
+        check(decoded.fadeIn == nil && decoded.fadeOut == nil, "clips saved before fades decode")
+
+        // Markers are part of undo.
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("voxaster-markers-" + UUID().uuidString)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+        let cast = CastStore(file: root.appendingPathComponent("cast.json"), scenesRoot: root.appendingPathComponent("scenes"))
+        let model = AppModel(startServices: false, storageRoot: root.appendingPathComponent("model"))
+        cast.markBaseline()
+        cast.addMarker(at: 3.0, model)
+        cast.addMarker(at: 1.0, model)
+        check(cast.markers.map(\.t) == [1.0, 3.0] && cast.markers.map(\.name) == ["Marker 2", "Marker 1"], "markers stay in time order")
+        cast.renameMarker(cast.markers[0].id, to: "Joke lands", model)
+        check(cast.markers[0].name == "Joke lands", "markers can be renamed")
+        cast.undo(model)
+        check(cast.markers[0].name == "Marker 2", "undo reverts a rename")
+        cast.undo(model); cast.undo(model)
+        check(cast.markers.isEmpty && !cast.canUndo, "undo removes added markers")
+    }
+}

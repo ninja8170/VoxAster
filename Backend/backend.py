@@ -568,7 +568,7 @@ async def cast_assemble(paths: str = Form(...), gap_ms: int = Form(350), room: s
 # Cast "Together" engine: MOSS-TTSD in its own worker process (moss_engine.py)
 # ---------------------------------------------------------------------------
 from moss_engine import MossEngine, MossUnavailable
-from studio_tools import moss_script, moss_token_budget, line_slices, mix_timeline
+from studio_tools import moss_script, moss_token_budget, line_slices, mix_timeline, normalize_loudness
 
 MOSS = MossEngine(DATA_ROOT)
 MOSS_PASS_SCORE = 90
@@ -665,6 +665,25 @@ async def cast_moss(lines: str = Form(...), seed: int = Form(0), check: bool = F
             Path(path).unlink(missing_ok=True)
 
 
+@app.post("/audio/loudness")
+async def audio_loudness(path: str = Form(...), target: float = Form(-16.0)):
+    """A copy of an output normalised to `target` LUFS (BS.1770), peaks limited to -1 dBFS."""
+    if not -36.0 <= target <= -6.0:
+        raise HTTPException(422, "Loudness target must be between -36 and -6 LUFS.")
+    source = output_file(path)
+
+    def work():
+        audio, sr = read_audio(source)
+        out, before, after = normalize_loudness(audio, sr, target)
+        output = OUTPUT_DIR / f"voxaster-{uuid.uuid4().hex[:8]}.wav"
+        sf.write(str(output), out, sr)
+        return {"output": str(output), "before": before, "after": after, "target": target}
+    try:
+        return await run_in_threadpool(work)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
 @app.post("/cast/mix")
 async def cast_mix(clips: str = Form(...), room: str = Form("dry"), stems: bool = Form(False)):
     """Builds the scene master from timeline clips: each is a slice of a rendered take
@@ -685,7 +704,10 @@ async def cast_mix(clips: str = Form(...), room: str = Form("dry"), stems: bool 
             if not (0 <= src_in < src_out and 0 <= at <= 3600):
                 raise ValueError
             lane = str(item.get("lane", "")).strip()[:40] or "Lane"
-            optional = {k: (float(item[k]) if item.get(k) is not None else None) for k in ("cut_at", "duck_from")}
+            optional = {k: (float(item[k]) if item.get(k) is not None else None)
+                        for k in ("cut_at", "duck_from", "fade_in", "fade_out")}
+            if any(optional[k] is not None and not 0 <= optional[k] <= 30 for k in ("fade_in", "fade_out")):
+                raise ValueError
             parsed.append(dict(path=output_file(item["path"]), src_in=src_in, src_out=src_out, at=at,
                                lane=lane, gain_db=float(np.clip(float(item.get("gain_db", 0)), -24, 12)), **optional))
     except (KeyError, TypeError, ValueError) as exc:

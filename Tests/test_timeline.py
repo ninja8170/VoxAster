@@ -100,3 +100,52 @@ class MixRouteTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+from studio_tools import integrated_loudness, normalize_loudness, limit
+
+
+class LoudnessTests(unittest.TestCase):
+    def sine(self, db, seconds=5.0, f=997):
+        t = np.arange(int(seconds * SR)) / SR
+        return (10 ** (db / 20) * np.sin(2 * np.pi * f * t)).astype(np.float32)
+
+    def test_reference_sine(self):
+        # BS.1770 calibration: a 997 Hz full-scale sine in one channel reads -3.01 LUFS.
+        self.assertAlmostEqual(integrated_loudness(self.sine(0), SR), -3.01, delta=0.1)
+        self.assertAlmostEqual(integrated_loudness(self.sine(-20), SR), -23.01, delta=0.1)
+        self.assertIsNone(integrated_loudness(np.zeros(SR * 2, dtype=np.float32), SR))
+
+    def test_normalize_hits_target_under_ceiling(self):
+        speechish = self.sine(-30) * (np.sin(np.arange(5 * SR) / SR * 2 * np.pi * 2) > 0)
+        for target in (-23, -16, -14):
+            out, before, after = normalize_loudness(speechish, SR, target)
+            self.assertAlmostEqual(after, target, delta=0.5)
+            self.assertLessEqual(float(np.max(np.abs(out))), 10 ** (-1 / 20) + 1e-6)
+
+    def test_limiter_only_touches_peaks(self):
+        quiet = self.sine(-12, 1.0)
+        np.testing.assert_allclose(limit(quiet, SR), quiet, atol=1e-6)
+        loud = limit(self.sine(3, 1.0), SR)
+        self.assertLessEqual(float(np.max(np.abs(loud))), 10 ** (-1 / 20) + 1e-6)
+
+
+class FadeTests(unittest.TestCase):
+    def test_fades_ramp_the_edges(self):
+        a = shape_clip(tone(2.0), SR, 0.0, fade_in=0.5, fade_out=0.5)
+        first = np.abs(a[:int(0.01 * SR)]).max()
+        middle = np.abs(a[SR - 200:SR + 200]).max()
+        self.assertLess(first, 0.05 * middle)
+        self.assertLess(np.abs(a[-int(0.01 * SR):]).max(), 0.05 * middle)
+        self.assertGreater(np.abs(a[int(0.4 * SR):int(0.45 * SR)]).max(), 0.6 * middle)
+
+
+class LoudnessRouteTests(unittest.TestCase):
+    def test_route(self):
+        client = TestClient(backend.app, base_url="http://127.0.0.1:8011")
+        path = backend.OUTPUT_DIR / 'test-loud.wav'
+        sf.write(str(path), tone(3.0, 0.05), SR)
+        r = client.post('/audio/loudness', data=dict(path=str(path), target='-16'))
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertAlmostEqual(r.json()['after'], -16, delta=0.5)
+        self.assertEqual(client.post('/audio/loudness', data=dict(path=str(path), target='0')).status_code, 422)

@@ -12,6 +12,9 @@ struct CastTimeline: View {
     @Binding var pps: CGFloat                     // points per second
     var fitToken: Int
     var onEdit: (CastStore.Clip) -> Void = { _ in }
+    var onRenameMarker: (CastStore.Marker) -> Void = { _ in }
+    @Binding var loop: ClosedRange<Double>?
+    @State private var loopAnchor: Double?
     @State private var origin: CastStore.Clip?    // the clip as it was when the drag began
     @State private var fitted = false
     @State private var guide: Double?             // snap guide line while dragging
@@ -93,7 +96,21 @@ struct CastTimeline: View {
             .allowsHitTesting(false)
             grid(width: width, height: height, lanes: lanes.count, laneHeight: laneHeight)
                 .onTapGesture { selection = nil }
+            if let loop {
+                Rectangle().fill(Trace.cobalt.opacity(0.08))
+                    .overlay(alignment: .leading) { Rectangle().fill(Trace.cobalt.opacity(0.6)).frame(width: 1) }
+                    .overlay(alignment: .trailing) { Rectangle().fill(Trace.cobalt.opacity(0.6)).frame(width: 1) }
+                    .frame(width: max(1, CGFloat(loop.upperBound - loop.lowerBound) * pps), height: height)
+                    .offset(x: CGFloat(loop.lowerBound) * pps)
+                    .allowsHitTesting(false)
+            }
+            ForEach(cast.markers) { marker in
+                Rectangle().fill(Trace.ok.opacity(0.55)).frame(width: 1, height: height - Self.rulerHeight)
+                    .offset(x: CGFloat(marker.t) * pps, y: Self.rulerHeight)
+                    .allowsHitTesting(false)
+            }
             ruler(width: width)
+            ForEach(cast.markers) { marker in markerFlag(marker) }
             ForEach(cast.clips) { clip in
                 if let row = lanes.firstIndex(of: clip.lane) {
                     clipView(clip, height: laneHeight - 10)
@@ -162,12 +179,38 @@ struct CastTimeline: View {
         }
         .frame(width: width, height: Self.rulerHeight)
         .contentShape(Rectangle())
-        .gesture(SpatialTapGesture().onEnded { tap in
-            guard let master = cast.masterURL else { return }
-            player.seek(master, to: max(0, Double(tap.location.x / pps)))
+        .gesture(DragGesture(minimumDistance: 0).onChanged { value in
+            guard abs(value.translation.width) > 3 else { return }
+            let a = loopAnchor ?? max(0, Double(value.startLocation.x / pps))
+            loopAnchor = a
+            let b = max(0, Double(value.location.x / pps))
+            loop = min(a, b)...max(a, b)
+        }.onEnded { value in
+            defer { loopAnchor = nil }
+            guard abs(value.translation.width) <= 3, let master = cast.masterURL else { return }
+            player.seek(master, to: max(0, Double(value.location.x / pps)))
             if !player.isPlaying(master) { player.toggle(master) }
         })
-        .help("Click to play from here")
+        .help("Click to play from here · drag to set a loop region")
+    }
+
+    private func markerFlag(_ marker: CastStore.Marker) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: "flag.fill").font(.system(size: 8))
+            Text(marker.name).font(.system(size: 10, weight: .medium)).lineLimit(1)
+        }
+        .foregroundStyle(Color.white)
+        .padding(.horizontal, 4).padding(.vertical, 1)
+        .background(Trace.ok, in: RoundedRectangle(cornerRadius: 3))
+        .fixedSize()
+        .offset(x: CGFloat(marker.t) * pps, y: 1)
+        .onTapGesture(count: 2) { onRenameMarker(marker) }
+        .onTapGesture { if let master = cast.masterURL { player.seek(master, to: marker.t) } }
+        .contextMenu {
+            Button("Rename…") { onRenameMarker(marker) }
+            Button("Delete Marker", role: .destructive) { cast.deleteMarker(marker.id, model) }
+        }
+        .help("\(marker.name) · click to jump, double-click to rename")
     }
 
     // MARK: Clips
@@ -204,6 +247,7 @@ struct CastTimeline: View {
             }
         }
         .frame(width: width, height: height)
+        .overlay(alignment: .topLeading) { fadeShading(clip, width: width, height: height) }
         .overlay(alignment: .topLeading) {
             // Where Whisper heard a word wrongly or not at all.
             ForEach(Array(issues.enumerated()), id: \.offset) { _, issue in
@@ -229,7 +273,48 @@ struct CastTimeline: View {
         .onTapGesture { selection = clip.id }
         .overlay(alignment: .leading) { edge(clip, leading: true) }
         .overlay(alignment: .trailing) { edge(clip, leading: false) }
+        .overlay(alignment: .topLeading) { if isSelected { fadeHandle(clip, width: width, start: true) } }
+        .overlay(alignment: .topLeading) { if isSelected { fadeHandle(clip, width: width, start: false) } }
         .help(clip.text)
+    }
+
+    /// The faded-out corners of a clip, drawn as darkened ramps over the waveform.
+    private func fadeShading(_ clip: CastStore.Clip, width: CGFloat, height: CGFloat) -> some View {
+        Canvas { ctx, size in
+            let top: CGFloat = 18
+            let fi = CGFloat(clip.fadeIn ?? 0) * pps, fo = CGFloat(clip.fadeOut ?? 0) * pps
+            if fi > 1 {
+                var p = Path(); p.move(to: CGPoint(x: 0, y: top)); p.addLine(to: CGPoint(x: fi, y: top))
+                p.addLine(to: CGPoint(x: 0, y: size.height)); p.closeSubpath()
+                ctx.fill(p, with: .color(Trace.ground.opacity(0.7)))
+            }
+            if fo > 1 {
+                var p = Path(); p.move(to: CGPoint(x: size.width, y: top)); p.addLine(to: CGPoint(x: size.width - fo, y: top))
+                p.addLine(to: CGPoint(x: size.width, y: size.height)); p.closeSubpath()
+                ctx.fill(p, with: .color(Trace.ground.opacity(0.7)))
+            }
+        }
+        .frame(width: width, height: height)
+        .allowsHitTesting(false)
+    }
+
+    /// Drag the dot at a clip's top corner inward to fade it in (left) or out (right).
+    private func fadeHandle(_ clip: CastStore.Clip, width: CGFloat, start: Bool) -> some View {
+        let seconds = start ? (clip.fadeIn ?? 0) : (clip.fadeOut ?? 0)
+        let x = start ? CGFloat(seconds) * pps : width - CGFloat(seconds) * pps
+        return Circle().fill(Trace.ok).overlay(Circle().strokeBorder(Color.white, lineWidth: 1))
+            .frame(width: 10, height: 10)
+            .contentShape(Rectangle().inset(by: -4))
+            .offset(x: min(max(0, x - 5), width - 10), y: 13)
+            .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .named(Self.space)).onChanged { value in
+                let base = origin ?? clip
+                if origin == nil { origin = clip }
+                let baseFade = start ? (base.fadeIn ?? 0) : (base.fadeOut ?? 0)
+                let delta = Double(value.translation.width / pps) * (start ? 1 : -1)
+                let fade = (min(max(0, baseFade + delta), base.length / 2) * 100).rounded() / 100
+                cast.editClip(clip.id) { c in if start { c.fadeIn = fade } else { c.fadeOut = fade } }
+            }.onEnded { _ in origin = nil; cast.commitEdit(model) })
+            .help(start ? "Drag to fade in" : "Drag to fade out")
     }
 
     /// Trim handles: the left edge moves the clip's start with its in-point.

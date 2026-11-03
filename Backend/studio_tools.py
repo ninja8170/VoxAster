@@ -536,16 +536,18 @@ def _ramp(n):
     return np.linspace(0, 1, max(1, n), dtype=np.float32)
 
 
-def shape_clip(audio, sr, at, gain_db=0.0, cut_at=None, duck_from=None):
-    """Clip edges, gain, cut-off fade and talk-over duck, in timeline seconds."""
+def shape_clip(audio, sr, at, gain_db=0.0, cut_at=None, duck_from=None, fade_in=0.0, fade_out=0.0):
+    """Clip edges, gain, fades, cut-off fade and talk-over duck, in timeline seconds."""
     audio = np.asarray(audio, dtype=np.float32) * np.float32(10 ** (gain_db / 20))
     n = len(audio)
     if not n:
         return audio
-    f = min(n // 2, int(CLIP_FADE * sr))
-    if f:
-        audio[:f] *= _ramp(f)
-        audio[-f:] *= _ramp(f)[::-1]
+    fi = min(n, max(int(CLIP_FADE * sr), int(max(0.0, fade_in) * sr)))
+    fo = min(n - min(fi, n // 2), max(int(CLIP_FADE * sr), int(max(0.0, fade_out) * sr)))
+    if fi:
+        audio[:fi] *= _ramp(fi)
+    if fo > 0:
+        audio[-fo:] *= _ramp(fo)[::-1]
     if duck_from is not None:
         i = int((duck_from - at) * sr)
         if i < n:
@@ -579,7 +581,8 @@ def mix_timeline(clips, sr, room="dry", stems=False):
         audio = mono(c["audio"])
         if ROOMS[room] is not None:
             audio = match_level(audio, sr)
-        audio = shape_clip(audio, sr, c["at"], c.get("gain_db", 0.0), c.get("cut_at"), c.get("duck_from"))
+        audio = shape_clip(audio, sr, c["at"], c.get("gain_db", 0.0), c.get("cut_at"), c.get("duck_from"),
+                           c.get("fade_in") or 0.0, c.get("fade_out") or 0.0)
         start = int(round(c["at"] * sr))
         lane = lanes.setdefault(c["lane"], np.zeros(length, dtype=np.float32))
         lane[start:start + len(audio)] += audio
@@ -591,3 +594,83 @@ def mix_timeline(clips, sr, room="dry", stems=False):
         return master.astype(np.float32), {}
     pad = len(master) - length
     return master.astype(np.float32), {k: np.pad(v, (0, pad)) for k, v in lanes.items()}
+
+
+# ---------------------------------------------------------------------------
+# Loudness (ITU-R BS.1770 / EBU R128) for exports
+# ---------------------------------------------------------------------------
+
+LOUDNESS_CEILING_DB = -1.0
+
+
+def _biquad(b, a, x):
+    from scipy.signal import lfilter
+    return lfilter(b, a, x)
+
+
+def _k_weight(audio, sr):
+    """BS.1770 K-weighting: a high shelf (+4 dB above ~1.7 kHz) then a ~38 Hz high-pass,
+    designed for any sample rate (coefficients as in pyloudnorm)."""
+    # High shelf
+    G, Q, fc = 3.99984385397, 0.7071752369554193, 1681.9744509555319
+    K = np.tan(np.pi * fc / sr)
+    Vh, Vb = 10 ** (G / 20), (10 ** (G / 20)) ** 0.4996667741545416
+    a0 = 1 + K / Q + K * K
+    b = [(Vh + Vb * K / Q + K * K) / a0, 2 * (K * K - Vh) / a0, (Vh - Vb * K / Q + K * K) / a0]
+    a = [1, 2 * (K * K - 1) / a0, (1 - K / Q + K * K) / a0]
+    y = _biquad(b, a, audio)
+    # High-pass
+    Q, fc = 0.5003270373253953, 38.13547087613982
+    K = np.tan(np.pi * fc / sr)
+    a0 = 1 + K / Q + K * K
+    return _biquad([1, -2, 1], [1, 2 * (K * K - 1) / a0, (1 - K / Q + K * K) / a0], y)
+
+
+def integrated_loudness(audio, sr):
+    """Integrated loudness in LUFS of mono audio (400 ms blocks, 75 % overlap,
+    absolute gate -70 LUFS, relative gate -10 LU). None for silence."""
+    audio = mono(audio).astype(np.float64)
+    block, hop = int(0.4 * sr), int(0.1 * sr)
+    if len(audio) < block:
+        audio = np.pad(audio, (0, block - len(audio)))
+    y = _k_weight(audio, sr)
+    starts = range(0, len(y) - block + 1, hop)
+    z = np.array([np.mean(y[s:s + block] ** 2) for s in starts])
+    loud = -0.691 + 10 * np.log10(z + 1e-20)
+    z = z[loud > -70]
+    if not z.size:
+        return None
+    relative = -0.691 + 10 * np.log10(np.mean(z)) - 10
+    z = z[-0.691 + 10 * np.log10(z) > relative]
+    return float(-0.691 + 10 * np.log10(np.mean(z))) if z.size else None
+
+
+def limit(audio, sr, ceiling_db=LOUDNESS_CEILING_DB, lookahead=0.005, release=0.08):
+    """Peak limiter: gain falls just before peaks that would pass the ceiling and recovers smoothly."""
+    from scipy.ndimage import minimum_filter1d
+    audio = np.asarray(audio, dtype=np.float64)
+    ceiling = 10 ** (ceiling_db / 20)
+    need = np.minimum(1.0, ceiling / np.maximum(np.abs(audio), 1e-12))
+    if need.min() >= 1.0:
+        return audio.astype(np.float32)
+    window = max(1, int(lookahead * sr))
+    gain = minimum_filter1d(need, size=2 * window + 1)
+    coeff = np.exp(-1.0 / (release * sr))
+    from scipy.signal import lfilter
+    # Release: gain recovers with a one-pole curve but never rises above what a peak needs.
+    smooth = np.empty_like(gain)
+    g = 1.0
+    for i, target in enumerate(gain):  # simple, exact; scenes are minutes long at most
+        g = target if target < g else target + (g - target) * coeff
+        smooth[i] = g
+    out = audio * smooth
+    return np.clip(out, -ceiling, ceiling).astype(np.float32)
+
+
+def normalize_loudness(audio, sr, target_lufs):
+    """Gain to `target_lufs`, peaks limited to -1 dBFS. Returns (audio, before, after)."""
+    before = integrated_loudness(audio, sr)
+    if before is None:
+        raise ValueError("The mix is silent.")
+    out = limit(np.asarray(audio, dtype=np.float32) * np.float32(10 ** ((target_lufs - before) / 20)), sr)
+    return out, round(before, 2), round(integrated_loudness(out, sr) or target_lufs, 2)
