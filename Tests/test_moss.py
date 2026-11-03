@@ -139,17 +139,19 @@ class MossRouteTests(unittest.TestCase):
     LINES = [dict(speaker='ANNA', text='Hello there.'), dict(speaker='BEN', text='Oh, hi!')]
 
     def test_renders_passage_and_keeps_a_good_take(self):
-        with patch.object(backend, 'take_report', return_value=dict(score=96)):
+        word = dict(text='Hello', status='wrong', heard='Yellow', t0=0.1, t1=0.4, location=0, length=5, sentence=0)
+        with patch.object(backend, 'take_report', return_value=dict(score=96, words=[word])):
             r = self.post(self.LINES, seed=5)
         self.assertEqual(r.status_code, 200, r.text)
         body = r.json()
         self.assertEqual((body['score'], body['attempts'], body['speakers']), (96, 1, ['ANNA', 'BEN']))
+        self.assertEqual(body['words'], [dict(text='Hello', status='wrong', heard='Yellow', t0=0.1, t1=0.4)])
         self.assertTrue(Path(body['output']).exists())
         self.assertEqual(self.renders[0]['text'], '[S1] Hello there. [S2] Oh, hi!')
         self.assertEqual(self.renders[0]['seed'], 5)
 
     def test_misheard_take_is_rendered_again_and_best_kept(self):
-        with patch.object(backend, 'take_report', side_effect=[dict(score=70), dict(score=85)]):
+        with patch.object(backend, 'take_report', side_effect=[dict(score=70, words=[]), dict(score=85, words=[])]):
             body = self.post(self.LINES).json()
         self.assertEqual((body['score'], body['attempts'], len(self.renders)), (85, 2, 2))
         self.assertNotEqual(self.renders[0]['seed'], self.renders[1]['seed'])

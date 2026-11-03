@@ -11,8 +11,10 @@ struct CastTimeline: View {
     @Binding var selection: UUID?
     @Binding var pps: CGFloat                     // points per second
     var fitToken: Int
+    var onEdit: (CastStore.Clip) -> Void = { _ in }
     @State private var origin: CastStore.Clip?    // the clip as it was when the drag began
     @State private var fitted = false
+    @State private var guide: Double?             // snap guide line while dragging
 
     static let rulerHeight: CGFloat = 26, panelWidth: CGFloat = 200, minLane: CGFloat = 96, maxLane: CGFloat = 220
     static let space = "castTimeline"
@@ -36,8 +38,15 @@ struct CastTimeline: View {
                     .frame(width: Self.panelWidth)
                     .background(Trace.sheet)
                     Rectangle().fill(Trace.rule).frame(width: 1)
-                    ScrollView(.horizontal) {
-                        canvas(lanes: lanes, laneHeight: laneHeight, minWidth: trackWidth - 1)
+                    ScrollViewReader { reader in
+                        ScrollView(.horizontal) {
+                            canvas(lanes: lanes, laneHeight: laneHeight, minWidth: trackWidth - 1)
+                        }
+                        // Follow the playhead a page at a time, like Audacity.
+                        .onChange(of: page(trackWidth)) { _, page in
+                            guard let page else { return }
+                            withAnimation(.easeOut(duration: 0.2)) { reader.scrollTo("page\(page)", anchor: .leading) }
+                        }
                     }
                 }
                 .frame(minHeight: geo.size.height, alignment: .top)
@@ -46,6 +55,19 @@ struct CastTimeline: View {
             .onChange(of: fitToken) { _, _ in fit(trackWidth) }
         }
     }
+
+    private var playhead: Double? {
+        guard let master = cast.masterURL, player.loadedURL == master else { return nil }
+        return player.currentTime
+    }
+
+    /// Which page-width of the timeline the playhead is on.
+    private func page(_ width: CGFloat) -> Int? {
+        guard let playhead, width > 40 else { return nil }
+        return Int(CGFloat(playhead) * pps / (width - 40))
+    }
+
+    private var snapping: Bool { !NSEvent.modifierFlags.contains(.command) }
 
     private func fit(_ width: CGFloat) {
         let duration = max(1, cast.timelineDuration)
@@ -60,7 +82,15 @@ struct CastTimeline: View {
     private func canvas(lanes: [String], laneHeight: CGFloat, minWidth: CGFloat) -> some View {
         let width = max(minWidth, CGFloat(cast.timelineDuration + 2) * pps)
         let height = Self.rulerHeight + 1 + CGFloat(lanes.count) * laneHeight
+        let pageWidth = max(40, minWidth - 40)
         return ZStack(alignment: .topLeading) {
+            // Scroll targets, one per page, for following the playhead.
+            HStack(spacing: 0) {
+                ForEach(0..<max(1, Int(width / pageWidth) + 1), id: \.self) { i in
+                    Color.clear.frame(width: pageWidth, height: 1).id("page\(i)")
+                }
+            }
+            .allowsHitTesting(false)
             grid(width: width, height: height, lanes: lanes.count, laneHeight: laneHeight)
                 .onTapGesture { selection = nil }
             ruler(width: width)
@@ -70,6 +100,10 @@ struct CastTimeline: View {
                         .offset(x: CGFloat(clip.start) * pps,
                                 y: Self.rulerHeight + 1 + CGFloat(row) * laneHeight + 5)
                 }
+            }
+            if let guide {
+                Rectangle().fill(Trace.ok).frame(width: 1, height: height).offset(x: CGFloat(guide) * pps)
+                    .allowsHitTesting(false)
             }
             if let master = cast.masterURL, player.loadedURL == master {
                 let x = CGFloat(player.currentTime) * pps
@@ -142,8 +176,14 @@ struct CastTimeline: View {
         let width = max(8, CGFloat(clip.length) * pps)
         let isSelected = selection == clip.id
         let audible = cast.isAudible(clip.lane)
+        let issues = cast.issues(for: clip)
         return VStack(spacing: 0) {
             HStack(spacing: 4) {
+                if !issues.isEmpty {
+                    Label("\(issues.count)", systemImage: "exclamationmark.triangle.fill")
+                        .labelStyle(.titleAndIcon).foregroundStyle(isSelected ? Color.white : Trace.record)
+                        .help("Whisper heard: " + issues.map { "“\($0.word)”" + ($0.heard.map { " as “\($0)”" } ?? " missing") }.joined(separator: ", "))
+                }
                 if clip.over { Image(systemName: "arrow.uturn.left").help("Talks over the previous line") }
                 Text(clip.text).lineLimit(1)
                 Spacer(minLength: 0)
@@ -164,6 +204,14 @@ struct CastTimeline: View {
             }
         }
         .frame(width: width, height: height)
+        .overlay(alignment: .topLeading) {
+            // Where Whisper heard a word wrongly or not at all.
+            ForEach(Array(issues.enumerated()), id: \.offset) { _, issue in
+                Rectangle().fill(Trace.record.opacity(0.8)).frame(width: 2, height: height - 18)
+                    .offset(x: CGFloat(issue.t) * pps, y: 18)
+                    .allowsHitTesting(false)
+            }
+        }
         .background(Trace.cobalt.opacity(isSelected ? 0.16 : 0.08))
         .clipShape(RoundedRectangle(cornerRadius: 3))
         .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(isSelected ? Trace.cobalt : Trace.rule, lineWidth: isSelected ? 1.5 : 0.5))
@@ -172,8 +220,12 @@ struct CastTimeline: View {
         .gesture(DragGesture(minimumDistance: 2, coordinateSpace: .named(Self.space)).onChanged { value in
             let base = origin ?? clip
             if origin == nil { origin = clip; selection = clip.id }
-            cast.editClip(clip.id) { $0.start = base.start + seconds(value.translation.width) }
-        }.onEnded { _ in origin = nil; cast.commitEdit(model) })
+            let landing = cast.landing(clip.id, proposed: base.start + seconds(value.translation.width),
+                                       snapping: snapping, playhead: playhead, tolerance: Double(8 / pps))
+            guide = landing.guide
+            cast.editClip(clip.id) { $0.start = landing.start }
+        }.onEnded { _ in origin = nil; guide = nil; cast.commitEdit(model) })
+        .onTapGesture(count: 2) { selection = clip.id; onEdit(clip) }
         .onTapGesture { selection = clip.id }
         .overlay(alignment: .leading) { edge(clip, leading: true) }
         .overlay(alignment: .trailing) { edge(clip, leading: false) }
@@ -188,17 +240,27 @@ struct CastTimeline: View {
             .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .named(Self.space)).onChanged { value in
                 let base = origin ?? clip
                 if origin == nil { origin = clip; selection = clip.id }
-                let dt = seconds(value.translation.width)
-                cast.editClip(clip.id) { c in
-                    if leading {
-                        let newIn = min(max(0, base.srcIn + dt), base.srcOut - 0.05)
+                let limits = cast.trimLimits(clip.id)
+                let edges = snapping ? cast.snapEdges(excluding: clip.id, playhead: playhead) : []
+                let tolerance = Double(8 / pps)
+                if leading {
+                    var edge = base.start + seconds(value.translation.width)
+                    let snapped = CastStore.snap(edge, to: edges, within: tolerance)
+                    edge = max(limits.earliest, snapped ?? edge)
+                    guide = snapped == edge ? snapped : nil
+                    cast.editClip(clip.id) { c in
+                        let newIn = min(max(0, base.srcIn + (edge - base.start)), base.srcOut - 0.05)
                         c.srcIn = newIn
                         c.start = base.start + (newIn - base.srcIn)
-                    } else {
-                        c.srcOut = max(base.srcIn + 0.05, base.srcOut + dt)
                     }
+                } else {
+                    var edge = base.end + seconds(value.translation.width)
+                    let snapped = CastStore.snap(edge, to: edges, within: tolerance)
+                    edge = min(limits.latest, snapped ?? edge)
+                    guide = snapped == edge ? snapped : nil
+                    cast.editClip(clip.id) { c in c.srcOut = max(base.srcIn + 0.05, base.srcOut + (edge - base.end)) }
                 }
-            }.onEnded { _ in origin = nil; cast.commitEdit(model) })
+            }.onEnded { _ in origin = nil; guide = nil; cast.commitEdit(model) })
     }
 }
 

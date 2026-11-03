@@ -11,6 +11,9 @@ struct SceneEditor: View {
     @State private var selection: UUID?
     @State private var pps: CGFloat = 70
     @State private var fitToken = 0
+    @State private var editing: CastStore.Clip?
+    @State private var draft = ""
+    @FocusState private var focused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -20,13 +23,84 @@ struct SceneEditor: View {
                 EmptyNote(title: "Nothing on the timeline yet",
                           detail: cast.busy ? "Rendering…" : "Render the scene, or Retry Failed to finish it.")
             } else {
-                CastTimeline(player: player, selection: $selection, pps: $pps, fitToken: fitToken)
+                CastTimeline(player: player, selection: $selection, pps: $pps, fitToken: fitToken,
+                             onEdit: { clip in draft = clip.text; editing = clip })
             }
             Rectangle().fill(Trace.rule).frame(height: 1)
             selectionBar
         }
         .background(Trace.ground)
         .onExitCommand { ui.sceneEditor = false }
+        .focusable()
+        .focused($focused)
+        .focusEffectDisabled()
+        .onAppear { focused = true }
+        .onChange(of: selection) { _, _ in focused = true }
+        .onKeyPress(keys: [.leftArrow, .rightArrow, .tab, .home, .end]) { press in key(press) }
+        .sheet(item: $editing) { clip in editSheet(clip) }
+    }
+
+    // MARK: Keys
+
+    /// ←/→ nudge the selected clip 50 ms (⇧ 10 ms) or move the playhead 1 s; Tab / ⇧Tab step
+    /// between clips in time order; Home / End jump to the ends of the scene.
+    private func key(_ press: KeyPress) -> KeyPress.Result {
+        let shift = press.modifiers.contains(.shift)
+        switch press.key {
+        case .leftArrow, .rightArrow:
+            let sign: Double = press.key == .leftArrow ? -1 : 1
+            if let clip = selected {
+                let landing = cast.landing(clip.id, proposed: clip.start + sign * (shift ? 0.01 : 0.05),
+                                           snapping: false, playhead: nil, tolerance: 0)
+                cast.editClip(clip.id) { $0.start = landing.start }
+                cast.commitEdit(model)
+            } else if let master = cast.masterURL {
+                player.seek(master, to: max(0, position + sign))
+            }
+        case .tab:
+            let ordered = cast.clips.sorted { ($0.start, $0.lane) < ($1.start, $1.lane) }
+            guard !ordered.isEmpty else { return .ignored }
+            let current = ordered.firstIndex { $0.id == selection }
+            let next = current.map { (shift ? $0 - 1 + ordered.count : $0 + 1) % ordered.count } ?? (shift ? ordered.count - 1 : 0)
+            selection = ordered[next].id
+            if let master = cast.masterURL, !playing { player.seek(master, to: ordered[next].start) }
+        case .home:
+            if let master = cast.masterURL { player.seek(master, to: 0) }
+        case .end:
+            if let master = cast.masterURL { player.seek(master, to: max(0, player.duration(for: master) - 0.05)) }
+        default:
+            return .ignored
+        }
+        return .handled
+    }
+
+    // MARK: Editing a line's words
+
+    private func editSheet(_ clip: CastStore.Clip) -> some View {
+        let passage = cast.lines[safe: clip.unit]?.parts != nil
+        return VStack(alignment: .leading, spacing: 12) {
+            Text("Edit \(clip.lane)'s line").font(.traceSection)
+            TextEditor(text: $draft)
+                .font(.system(size: 14, design: .serif))
+                .frame(width: 460, height: 110)
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Trace.rule))
+            Text(passage
+                 ? "The script is updated and the whole Together passage is performed again; later clips shift to fit."
+                 : "The script is updated and this line is rendered again in place; later clips shift to fit.")
+                .font(.traceCaption).foregroundStyle(Trace.graphite).fixedSize(horizontal: false, vertical: true)
+                .frame(width: 460, alignment: .leading)
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { editing = nil }.keyboardShortcut(.cancelAction)
+                Button("Render") {
+                    cast.editText(clip.id, to: draft, model: model)
+                    editing = nil
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !cast.canRetry(model))
+            }
+        }
+        .padding(20)
     }
 
     // MARK: Toolbar
@@ -58,8 +132,17 @@ struct SceneEditor: View {
                 .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Trace.rule, lineWidth: 0.5))
             Text("/ \(timecode(cast.timelineDuration, tenths: true))").font(.traceValue).foregroundStyle(Trace.graphite)
             divider
-            transportButton("minus.magnifyingglass", "Zoom out") { pps = max(10, pps / 1.4) }
-            transportButton("plus.magnifyingglass", "Zoom in") { pps = min(400, pps * 1.4) }
+            transportButton("arrow.uturn.backward", "Undo (⌘Z)") { cast.undo(model) }
+                .keyboardShortcut("z", modifiers: .command)
+                .disabled(!cast.canUndo || cast.busy)
+            transportButton("arrow.uturn.forward", "Redo (⇧⌘Z)") { cast.redo(model) }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+                .disabled(!cast.canRedo || cast.busy)
+            divider
+            transportButton("minus.magnifyingglass", "Zoom out (⌘−)") { pps = max(10, pps / 1.4) }
+                .keyboardShortcut("-", modifiers: .command)
+            transportButton("plus.magnifyingglass", "Zoom in (⌘+)") { pps = min(400, pps * 1.4) }
+                .keyboardShortcut("=", modifiers: .command)
             transportButton("arrow.left.and.right.square", "Fit the scene to the window") { fitToken += 1 }
             divider
             Picker("Room", selection: $cast.room) {
@@ -73,6 +156,11 @@ struct SceneEditor: View {
             Text(cast.sceneName.isEmpty ? cast.defaultSceneName : cast.sceneName)
                 .font(.system(size: 13, design: .serif)).foregroundStyle(Trace.graphite).lineLimit(1)
                 .frame(maxWidth: 220, alignment: .trailing)
+            if !cast.unchecked.isEmpty && cast.missing.isEmpty {
+                Button("Check Lines") { cast.checkAll(model) }
+                    .disabled(!cast.canRetry(model))
+                    .help("Transcribe every line and mark words that came out wrong")
+            }
             if !cast.missing.isEmpty && !cast.lines.isEmpty {
                 Button(cast.failedCount > 0 ? "Retry Failed (\(cast.missing.count))" : "Render Remaining (\(cast.missing.count))") {
                     cast.retryMissing(model)
@@ -136,11 +224,21 @@ struct SceneEditor: View {
                 Toggle("Talks over", isOn: Binding(get: { clip.over }, set: { value in edit(clip) { $0.over = value } }))
                     .toggleStyle(.checkbox)
                     .help("The previous line keeps going underneath this one, a little quieter")
+                let issues = cast.issues(for: clip)
+                if !issues.isEmpty {
+                    Label(issues.map { "“\($0.word)”" + ($0.heard.map { " → “\($0)”" } ?? " missing") }.joined(separator: ", "),
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.traceCaption).foregroundStyle(Trace.record).lineLimit(1)
+                        .frame(maxWidth: 260, alignment: .leading)
+                        .help("Words Whisper heard differently from the script")
+                }
+                Button("Edit Words…") { draft = clip.text; editing = clip }
+                    .disabled(!cast.canRetry(model))
                 Button("Render Again") { cast.retry(clip.unit, model: model) }
                     .disabled(!cast.canRetry(model))
                     .help(cast.lines[safe: clip.unit]?.parts == nil ? "Render this line again" : "Render this passage again")
             } else {
-                Text("Click a clip to select it. Drag to move, drag its edges to trim. Click the ruler to play from there.")
+                Text("Click a clip to select it · drag to move, edges to trim (hold ⌘ to stop snapping) · double-click to edit its words · ←/→ nudge · Tab next clip")
                     .font(.traceCaption).foregroundStyle(Trace.pencil)
             }
             Spacer(minLength: 0)

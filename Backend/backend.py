@@ -641,7 +641,8 @@ async def cast_moss(lines: str = Form(...), seed: int = Form(0), check: bool = F
                     report = take_report(script, words, wav, 16000)
                     texts = [" ".join(str(i["text"]).split()) for i in items]
                     result.update(score=int(report["score"]), transcript=transcript,
-                                  segments=[list(s) for s in line_slices(texts, words, result["duration"])])
+                                  segments=[list(s) for s in line_slices(texts, words, result["duration"])],
+                                  words=[{k: w[k] for k in ("text", "status", "heard", "t0", "t1")} for w in report["words"]])
                 if not result["stop_reached"]:
                     result["score"] = min(result["score"], 50)  # ran out of budget: the end is cut off
                 if best is None or result["score"] > best["score"]:

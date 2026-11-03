@@ -262,6 +262,9 @@ final class CastStore: ObservableObject {
         var cut = false, over = false
         /// Together: where each part sits in the passage audio, [start, end] seconds (from Whisper).
         var slices: [[Double]]? = nil
+        /// Whisper's check of the rendered audio: score and the words that came out wrong.
+        var score: Int? = nil
+        var issues: [Issue]? = nil
 
         init(speaker: String, text: String, state: String = "Pending", output: URL? = nil, error: String? = nil,
              cut: Bool = false, over: Bool = false) {
@@ -282,7 +285,11 @@ final class CastStore: ObservableObject {
     struct StoredLine: Codable, Equatable {
         var speaker: String; var text: String; var path: String?; var error: String?; var parts: [Part]? = nil
         var cut: Bool? = nil; var over: Bool? = nil; var slices: [[Double]]? = nil
+        var score: Int? = nil; var issues: [Issue]? = nil
     }
+
+    /// A word Whisper heard wrongly (or not at all), at `t` seconds into the unit's audio.
+    struct Issue: Codable, Equatable { var t: Double; var word: String; var heard: String? }
 
     /// Whether the Together engine (MOSS-TTSD) is installed, as reported by the backend.
     struct EngineStatus: Decodable { var available: Bool; var reason: String }
@@ -363,6 +370,10 @@ final class CastStore: ObservableObject {
     private var liveEdit = false
     private var masterIsEdit = false
     private var remixTask: Task<Void, Never>?
+    private var undoStack: [Snapshot] = [], redoStack: [Snapshot] = []
+    private var baseline: Snapshot?
+    @Published private(set) var canUndo = false
+    @Published private(set) var canRedo = false
     private var durations: [URL: Double] = [:]
     @Published private(set) var masterURL: URL? { didSet { save() } }
     @Published private(set) var scenes: [Scene] = []
@@ -408,12 +419,15 @@ final class CastStore: ObservableObject {
         line.cut = stored.cut ?? false
         line.over = stored.over ?? false
         line.slices = stored.slices
+        line.score = stored.score
+        line.issues = stored.issues
         return line
     }
 
     private static func stored(_ line: Line, path: String?) -> StoredLine {
         StoredLine(speaker: line.speaker, text: line.text, path: path, error: line.error, parts: line.parts,
-                   cut: line.cut ? true : nil, over: line.over ? true : nil, slices: line.slices)
+                   cut: line.cut ? true : nil, over: line.over ? true : nil, slices: line.slices,
+                   score: line.score, issues: line.issues)
     }
 
     private func save() {
@@ -584,6 +598,8 @@ final class CastStore: ObservableObject {
                 status = "\(unit) \(index + 1) of \(lines.count) · \(lines[index].speaker)"
                 lines[index].state = "Rendering"
                 lines[index].error = nil
+                lines[index].score = nil
+                lines[index].issues = nil
                 var failure: String?
                 for attempt in 1...2 {
                     if attempt > 1 { status = "\(unit) \(index + 1) of \(lines.count) · trying again" }
@@ -606,6 +622,10 @@ final class CastStore: ObservableObject {
                     lines[index].error = lines[index].output == nil ? failure : "Retry failed, kept the previous take: \(failure)"
                 } else {
                     lines[index].state = "Done"
+                    if lines[index].parts == nil {
+                        status = "Checking line \(index + 1)"
+                        await checkUnit(index)
+                    }
                 }
                 progress = Double(step + 1) / Double(indices.count + 1)
             }
@@ -614,6 +634,7 @@ final class CastStore: ObservableObject {
                 status = missing.isEmpty ? "Stopped" : "Stopped · \(missing.count) of \(lines.count) lines left"
             } else if missing.isEmpty {
                 if clips.isEmpty || indices.count == lines.count { layoutAll() } else { indices.forEach(rippleUnit) }
+                markBaseline()
                 joined = await assemble(model)
             } else {
                 let failed = failedCount
@@ -692,6 +713,8 @@ final class CastStore: ObservableObject {
         }
         let score = json["score"] as? Int ?? 100
         if let segments = json["segments"] as? [[Double]], segments.count == parts.count { lines[index].slices = segments }
+        lines[index].score = score
+        lines[index].issues = Self.issues(json["words"] as? [[String: Any]] ?? [])
         if score < 90 {
             lines[index].error = "Check \(score)/100: some words may be off. Listen, or render this passage again."
         }
@@ -860,6 +883,7 @@ final class CastStore: ObservableObject {
         clips = (scene.clips ?? []).filter { $0.unit < lines.count }
         tracks = scene.tracks ?? Tracks()
         if clips.isEmpty && missing.isEmpty && !lines.isEmpty { layoutAll() }
+        markBaseline()
         masterURL = scene.master.map { folder.appendingPathComponent($0) }.flatMap { Self.exists($0) ? $0 : nil }
         sceneID = scene.id
         sceneName = scene.name
@@ -1069,7 +1093,12 @@ extension CastStore {
     /// After an edit: save, then rebuild the master shortly after the last change. Playback
     /// carries on from the same point in the new mix.
     func commitEdit(_ model: AppModel) {
+        recordHistory()
         save()
+        scheduleRemix(model)
+    }
+
+    private func scheduleRemix(_ model: AppModel) {
         remixTask?.cancel()
         remixTask = Task {
             try? await Task.sleep(nanoseconds: 450_000_000)
@@ -1119,5 +1148,218 @@ extension CastStore {
         } catch {
             status = "Could not export stems: \(error.localizedDescription)"
         }
+    }
+}
+
+
+// MARK: - Scene Editor: history, snapping, text edits, checks
+
+extension CastStore {
+    struct Snapshot: Equatable { var clips: [Clip]; var tracks: Tracks }
+
+    /// The timeline as it is now becomes the starting point; earlier history no longer applies
+    /// (after a render, re-render or opening a scene the clips point at different audio).
+    func markBaseline() {
+        baseline = Snapshot(clips: clips, tracks: tracks)
+        undoStack.removeAll()
+        redoStack.removeAll()
+        canUndo = false; canRedo = false
+    }
+
+    fileprivate func recordHistory() {
+        let now = Snapshot(clips: clips, tracks: tracks)
+        if let baseline, baseline != now {
+            undoStack.append(baseline)
+            if undoStack.count > 200 { undoStack.removeFirst() }
+            redoStack.removeAll()
+        }
+        baseline = now
+        canUndo = !undoStack.isEmpty; canRedo = !redoStack.isEmpty
+    }
+
+    func undo(_ model: AppModel) {
+        guard !busy, let previous = undoStack.popLast() else { return }
+        redoStack.append(Snapshot(clips: clips, tracks: tracks))
+        restore(previous, model)
+    }
+
+    func redo(_ model: AppModel) {
+        guard !busy, let next = redoStack.popLast() else { return }
+        undoStack.append(Snapshot(clips: clips, tracks: tracks))
+        restore(next, model)
+    }
+
+    private func restore(_ snapshot: Snapshot, _ model: AppModel) {
+        clips = snapshot.clips
+        tracks = snapshot.tracks
+        baseline = snapshot
+        canUndo = !undoStack.isEmpty; canRedo = !redoStack.isEmpty
+        save()
+        scheduleRemix(model)
+    }
+
+    // MARK: Snapping and the overlap guard
+
+    /// The nearest target within `within`, if any.
+    nonisolated static func snap(_ value: Double, to targets: [Double], within: Double) -> Double? {
+        guard let best = targets.min(by: { abs($0 - value) < abs($1 - value) }), abs(best - value) <= within else { return nil }
+        return best
+    }
+
+    /// The closest start for a clip of `length` that overlaps none of `others` on its track.
+    nonisolated static func place(_ start: Double, length: Double, among others: [(start: Double, end: Double)]) -> Double? {
+        func free(_ s: Double) -> Bool { s >= 0 && others.allSatisfy { s + length <= $0.start + 1e-6 || s >= $0.end - 1e-6 } }
+        if free(start) { return start }
+        return others.flatMap { [$0.start - length, $0.end] }.filter(free).min { abs($0 - start) < abs($1 - start) }
+    }
+
+    /// Where a dragged or nudged clip lands: snapped to other clips' edges and the playhead (unless
+    /// `snapping` is off), and never on top of another clip on the same track.
+    /// Returns the start and the edge it snapped to, for the guide line.
+    func landing(_ id: UUID, proposed: Double, snapping: Bool, playhead: Double?, tolerance: Double) -> (start: Double, guide: Double?) {
+        guard let clip = clips.first(where: { $0.id == id }) else { return (proposed, nil) }
+        var start = max(0, proposed), guide: Double?
+        if snapping {
+            let edges = snapEdges(excluding: id, playhead: playhead)
+            if let s = Self.snap(start, to: edges, within: tolerance) {
+                start = s; guide = s
+            } else if let e = Self.snap(start + clip.length, to: edges, within: tolerance) {
+                start = e - clip.length; guide = e
+            }
+        }
+        let others = clips.filter { $0.id != id && $0.lane == clip.lane }.map { (start: $0.start, end: $0.end) }
+        guard let placed = Self.place(start, length: clip.length, among: others) else { return (clip.start, nil) }
+        return (placed, placed == start ? guide : nil)
+    }
+
+    /// How far a clip's edges may be trimmed out before touching its neighbours on the same track.
+    func trimLimits(_ id: UUID) -> (earliest: Double, latest: Double) {
+        guard let clip = clips.first(where: { $0.id == id }) else { return (0, .infinity) }
+        let same = clips.filter { $0.id != id && $0.lane == clip.lane }
+        return (same.filter { $0.end <= clip.start + 1e-6 }.map(\.end).max() ?? 0,
+                same.filter { $0.start >= clip.end - 1e-6 }.map(\.start).min() ?? .infinity)
+    }
+
+    /// The edges a trim can snap to.
+    func snapEdges(excluding id: UUID, playhead: Double?) -> [Double] {
+        var edges: [Double] = [0]
+        for clip in clips where clip.id != id { edges.append(clip.start); edges.append(clip.end) }
+        if let playhead { edges.append(playhead) }
+        return edges
+    }
+
+    // MARK: Editing a line's words
+
+    /// The position of a clip's line in the script (counting every spoken line in order).
+    func scriptIndex(of clip: Clip) -> Int {
+        lines.prefix(clip.unit).reduce(0) { $0 + ($1.parts?.count ?? 1) } + clip.part
+    }
+
+    /// Rewrites one spoken line in the script, keeping its speaker as written; any continuation
+    /// lines of that entry are folded into it.
+    nonisolated static func replacing(line index: Int, in script: String, with text: String) -> String {
+        let pattern = try! NSRegularExpression(pattern: #"^\s*([A-Za-z][A-Za-z0-9 .'’-]{0,30}?)\s*:\s*(.*)$"#)
+        var raws = script.components(separatedBy: "\n")
+        var parsed = -1, target: Int?, continuation: [Int] = [], labelled = false
+        for (i, raw) in raws.enumerated() where !raw.trimmingCharacters(in: .whitespaces).isEmpty {
+            let ns = raw as NSString
+            if pattern.firstMatch(in: raw, range: NSRange(location: 0, length: ns.length)) != nil {
+                parsed += 1
+                if parsed == index { target = i; labelled = true } else if parsed > index { break }
+            } else if parsed == -1 {
+                parsed = 0
+                if index == 0 { target = i; labelled = false }
+            } else if parsed == index {
+                continuation.append(i)
+            }
+        }
+        guard let target else { return script }
+        if labelled {
+            let raw = raws[target] as NSString
+            let m = pattern.firstMatch(in: raws[target], range: NSRange(location: 0, length: raw.length))!
+            raws[target] = raw.substring(with: m.range(at: 1)) + ": " + text
+        } else {
+            raws[target] = text
+        }
+        for i in continuation.reversed() { raws.remove(at: i) }
+        return raws.joined(separator: "\n")
+    }
+
+    /// New words for one clip: the script is updated, then the line (or its Together passage)
+    /// is rendered again in place. Cut-off and talk-over marks are kept.
+    func editText(_ id: UUID, to text: String, model: AppModel) {
+        guard canRetry(model), let ci = clips.firstIndex(where: { $0.id == id }) else { return }
+        let clip = clips[ci]
+        var clean = Self.cue(text).text
+        guard !clean.isEmpty else { return }
+        if clip.cut && !clean.hasSuffix("—") { clean += "—" }
+        var marked = clean
+        if clip.cut { marked = String(marked.dropLast()).trimmingCharacters(in: .whitespaces) + "--" }
+        if clip.over { marked = ">> " + marked }
+        script = Self.replacing(line: scriptIndex(of: clip), in: script, with: marked)
+        if var parts = lines[clip.unit].parts, parts.indices.contains(clip.part) {
+            parts[clip.part].text = clean
+            lines[clip.unit].parts = parts
+            lines[clip.unit].text = parts.map { "\($0.speaker): \($0.text)" }.joined(separator: "\n")
+        } else {
+            lines[clip.unit].text = clean
+        }
+        clips[ci].text = clean
+        retry(clip.unit, model: model)
+    }
+
+    // MARK: Checking lines with Whisper
+
+    /// Words Whisper heard wrongly or not at all, at their time in the unit's audio.
+    nonisolated static func issues(_ words: [[String: Any]]) -> [Issue] {
+        var out: [Issue] = []
+        var last = 0.0
+        for (i, word) in words.enumerated() {
+            let t0 = word["t0"] as? Double
+            if let t1 = word["t1"] as? Double { last = t1 }
+            guard let status = word["status"] as? String, status != "ok" else { continue }
+            let t = t0 ?? words[(i + 1)...].lazy.compactMap { $0["t0"] as? Double }.first ?? last
+            out.append(Issue(t: t, word: word["text"] as? String ?? "", heard: word["heard"] as? String))
+        }
+        return out
+    }
+
+    /// Transcribes one rendered unit and records the words that came out wrong.
+    func checkUnit(_ index: Int) async {
+        guard lines.indices.contains(index), let url = lines[index].output else { return }
+        let text = lines[index].parts?.map(\.text).joined(separator: " ") ?? lines[index].text
+        guard let data = try? await StudioAPI.post("takes/check", fields: ["script": text, "paths": StudioAPI.jsonList([url.path])]),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let reports = json["reports"] as? [String: Any],
+              let report = reports.values.first as? [String: Any],
+              lines.indices.contains(index), lines[index].output == url else { return }
+        lines[index].score = report["score"] as? Int
+        lines[index].issues = Self.issues(report["words"] as? [[String: Any]] ?? [])
+    }
+
+    var unchecked: [Int] { lines.indices.filter { lines[$0].output != nil && lines[$0].score == nil } }
+
+    /// Checks every rendered line that hasn't been checked yet (older scenes, interrupted renders).
+    func checkAll(_ model: AppModel) {
+        let todo = unchecked
+        guard !todo.isEmpty, canRetry(model) else { return }
+        busy = true
+        task = Task {
+            defer { busy = false; task = nil }
+            for (n, index) in todo.enumerated() {
+                if Task.isCancelled { break }
+                status = "Checking \(n + 1) of \(todo.count)"
+                await checkUnit(index)
+            }
+            let flagged = clips.filter { !issues(for: $0).isEmpty }.count
+            status = flagged == 0 ? "Every line matches the script" : "\(flagged) \(flagged == 1 ? "line has" : "lines have") words to check"
+            if sceneID != nil { saveScene(announce: false) }
+        }
+    }
+
+    /// The issues that fall inside a clip, at clip-relative seconds.
+    func issues(for clip: Clip) -> [Issue] {
+        (lines[safe: clip.unit]?.issues ?? []).filter { $0.t >= clip.srcIn - 0.02 && $0.t < clip.srcOut }
+            .map { Issue(t: $0.t - clip.srcIn, word: $0.word, heard: $0.heard) }
     }
 }
