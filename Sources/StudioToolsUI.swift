@@ -175,6 +175,7 @@ struct DoctorLine: View {
 struct CastPlate: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var cast: CastStore
+    @State private var pending: (() -> Void)?
 
     var body: some View {
         let speakers = cast.speakers
@@ -192,7 +193,7 @@ struct CastPlate: View {
                     Button("Save as New Scene") { cast.saveScene(asNew: true) }
                         .disabled(cast.sceneID == nil)
                     Divider()
-                    Button("New Scene") { cast.newScene() }.disabled(cast.busy)
+                    Button("New Scene") { pending = { cast.newScene() } }.disabled(cast.busy)
                 } label: {
                     Text(cast.sceneID == nil ? "Save Scene" : "Save")
                 } primaryAction: {
@@ -222,7 +223,38 @@ struct CastPlate: View {
             }
         }
         .padding(.horizontal, 22).padding(.vertical, 16)
+        .unsavedSceneGuard($pending)
     }
+}
+
+/// Asks before New Scene / Open Scene throws away a scene that isn't saved.
+struct UnsavedSceneGuard: ViewModifier {
+    @EnvironmentObject var cast: CastStore
+    @Binding var pending: (() -> Void)?
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: pending != nil) { _, waiting in
+                // Nothing to lose: go straight ahead.
+                if waiting, !cast.hasUnsavedWork, let action = pending { pending = nil; action() }
+            }
+            .confirmationDialog("Save the current scene first?",
+                                isPresented: Binding(get: { pending != nil && cast.hasUnsavedWork },
+                                                     set: { if !$0 { pending = nil } })) {
+                Button("Save and Continue") {
+                    let action = pending; pending = nil
+                    if cast.saveScene() { action?() }
+                }
+                Button("Don't Save", role: .destructive) { let action = pending; pending = nil; action?() }
+                Button("Cancel", role: .cancel) { pending = nil }
+            } message: {
+                Text("“\(cast.sceneName.isEmpty ? cast.defaultSceneName : cast.sceneName)” has changes that aren't in Library › Scenes.")
+            }
+    }
+}
+
+extension View {
+    func unsavedSceneGuard(_ pending: Binding<(() -> Void)?>) -> some View { modifier(UnsavedSceneGuard(pending: pending)) }
 }
 
 struct CastVoicePicker: View {

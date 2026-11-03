@@ -585,6 +585,17 @@ struct PlayMenuItem: View {
     }
 }
 
+/// Record / Stop Recording for menus. Observes the recorder: menus that read
+/// `model.recorder.isRecording` through the model kept saying "Record Reference" while recording.
+struct RecordMenuItem: View {
+    @ObservedObject var recorder: RecorderController
+    let action: () -> Void
+
+    var body: some View {
+        Button(recorder.isRecording ? "Stop Recording" : "Record Reference", action: action)
+    }
+}
+
 /// The same, as a text button ("Listen" / "Stop").
 struct ListenToggle: View {
     @ObservedObject var player: AudioPlayerController

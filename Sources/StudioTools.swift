@@ -912,7 +912,11 @@ final class CastStore: ObservableObject {
 
     func deleteScene(_ scene: Scene) {
         guard !(busy && sceneID == scene.id) else { return }
-        try? FileManager.default.removeItem(at: folder(for: scene.id))
+        // To the Trash, so a mistaken delete can be put back from Finder.
+        let folder = folder(for: scene.id)
+        if (try? FileManager.default.trashItem(at: folder, resultingItemURL: nil)) == nil {
+            try? FileManager.default.removeItem(at: folder)
+        }
         if sceneID == scene.id {
             sceneID = nil
             // The open lines lived in the deleted folder.
@@ -925,6 +929,14 @@ final class CastStore: ObservableObject {
             masterURL = nil
         }
         loadScenes()
+    }
+
+    /// Whether starting or opening another scene would lose work: a written scene never saved,
+    /// or a saved one whose script or voices changed since. (Timeline edits save themselves.)
+    var hasUnsavedWork: Bool {
+        guard !script.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !lines.isEmpty else { return false }
+        guard let id = sceneID, let saved = scenes.first(where: { $0.id == id }) else { return true }
+        return saved.script != script || saved.assignments != assignments
     }
 
     /// Clears the page for a new scene. The previous one stays in the Library if it was saved.
@@ -1047,7 +1059,12 @@ extension CastStore {
         let placed = fresh.map { clip -> Clip in
             var clip = clip
             clip.start = anchor.start + (clip.srcIn - base)
-            if let previous = old.first(where: { $0.part == clip.part }) { clip.id = previous.id; clip.gainDb = previous.gainDb }
+            if let previous = old.first(where: { $0.part == clip.part }) {
+                // Keep the user's level and fades (fades used to be dropped on Render Again).
+                clip.id = previous.id; clip.gainDb = previous.gainDb
+                clip.fadeIn = previous.fadeIn.map { min($0, clip.length / 2) }
+                clip.fadeOut = previous.fadeOut.map { min($0, clip.length / 2) }
+            }
             return clip
         }
         let delta = (placed.map(\.end).max() ?? oldEnd) - oldEnd

@@ -12,6 +12,7 @@ struct TakesLibrary: View {
     @State private var mode = "All"
     @State private var selection = Set<AppModel.Generation.ID>()
     @State private var sortOrder = [KeyPathComparator(\AppModel.Generation.createdAt, order: .reverse)]
+    @State private var confirmClear = false
 
     private var rows: [AppModel.Generation] {
         items.filter { item in
@@ -80,11 +81,16 @@ struct TakesLibrary: View {
             }
         }
         .searchable(text: $search, placement: .toolbar, prompt: "Search scripts")
+        .confirmationDialog("Clear all \(model.generations.count) takes?", isPresented: $confirmClear) {
+            Button("Clear All Takes", role: .destructive) { model.clearHistory() }
+        } message: {
+            Text("They are removed from this list. The audio files stay in your outputs folder.")
+        }
         .toolbar {
             if title == "Takes" {
                 ToolbarItem {
                     Menu {
-                        Button("Clear All Takes…", role: .destructive) { model.clearHistory() }
+                        Button("Clear All Takes…", role: .destructive) { confirmClear = true }
                             .disabled(model.generations.isEmpty)
                     } label: { Image(systemName: "ellipsis.circle") }
                     .help("More")
@@ -141,7 +147,7 @@ struct VoicesLibrary: View {
                         PlayMenuItem(player: model.referencePlayer, url: voice.url)
                         Button("Show in Finder") { model.reveal(voice.url) }
                         Divider()
-                        Button("Delete Voice", role: .destructive) { model.deleteVoice(voice) }
+                        Button("Move Voice to Trash", role: .destructive) { model.deleteVoice(voice) }
                     }
                 } primaryAction: { ids in
                     if let voice = model.savedVoices.first(where: { ids.contains($0.id) }) { model.useVoice(voice); ui.place = .studio }
@@ -220,6 +226,7 @@ struct ScenesLibrary: View {
     @State private var renaming: CastStore.Scene?
     @State private var newName = ""
     @State private var masters: [CastStore.Scene.ID: URL] = [:]
+    @State private var pending: (() -> Void)?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -227,7 +234,7 @@ struct ScenesLibrary: View {
                 Text("Scenes").font(.traceTitle)
                 Text("\(cast.scenes.count)").font(.traceValue).foregroundStyle(Trace.graphite)
                 Spacer()
-                Button("New Scene") { cast.newScene(); ui.setMode(.cast, model) }.disabled(cast.busy)
+                Button("New Scene") { pending = { cast.newScene(); ui.setMode(.cast, model) } }.disabled(cast.busy)
             }
             .padding(.horizontal, 20).padding(.vertical, 14)
             Hairline()
@@ -275,7 +282,7 @@ struct ScenesLibrary: View {
                         Button("Rename…") { newName = scene.name; renaming = scene }
                         Button("Show in Finder") { model.reveal(cast.folder(for: scene.id)) }
                         Divider()
-                        Button("Delete Scene", role: .destructive) { cast.deleteScene(scene) }
+                        Button("Move Scene to Trash", role: .destructive) { cast.deleteScene(scene) }
                             .disabled(cast.busy && cast.sceneID == scene.id)
                     }
                 } primaryAction: { ids in
@@ -283,6 +290,7 @@ struct ScenesLibrary: View {
                 }
             }
         }
+        .unsavedSceneGuard($pending)
         .onAppear { cast.loadScenes(); findMasters() }
         .onChange(of: cast.scenes) { _, _ in findMasters() }
         .sheet(item: $renaming) { scene in
@@ -323,8 +331,8 @@ struct ScenesLibrary: View {
 
     private func open(_ scene: CastStore.Scene) {
         guard !cast.busy else { return }
-        cast.openScene(scene)
-        ui.setMode(.cast, model)
+        if cast.sceneID == scene.id { ui.setMode(.cast, model); return }   // already open: just go there
+        pending = { cast.openScene(scene); ui.setMode(.cast, model) }
     }
 
     private func commitRename(_ scene: CastStore.Scene) {

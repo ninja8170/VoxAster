@@ -376,7 +376,7 @@ struct StudioSidebar: View {
                         PlayMenuItem(player: model.referencePlayer, url: voice.url)
                         Button("Show in Finder") { model.reveal(voice.url) }
                         Divider()
-                        Button("Delete Voice…", role: .destructive) { model.deleteVoice(voice) }
+                        Button("Move Voice to Trash", role: .destructive) { model.deleteVoice(voice) }
                     }
                 }
             }
@@ -476,9 +476,7 @@ struct VoiceMenu: View {
             }
             Section {
                 Button("Choose Audio File…") { model.setVoiceSource(.reference); model.chooseReference() }
-                Button(model.recorder.isRecording ? "Stop Recording" : "Record Reference") {
-                    model.setVoiceSource(.reference); model.startRecording()
-                }
+                RecordMenuItem(recorder: model.recorder) { model.setVoiceSource(.reference); model.startRecording() }
                 Button("Design a New Voice") { model.setStudioMode(.design); ui.inspectorTab = .voice; ui.showInspector = true }
             }
         } label: {
@@ -519,7 +517,7 @@ struct StudioCommands: Commands {
             }
             Divider()
             Button("Choose Reference Audio…") { model.setVoiceSource(.reference); model.chooseReference() }.keyboardShortcut("o")
-            Button(model.recorder.isRecording ? "Stop Recording" : "Record Reference") { model.setVoiceSource(.reference); model.startRecording() }
+            RecordMenuItem(recorder: model.recorder) { model.setVoiceSource(.reference); model.startRecording() }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
             Button("Analyze Reference") { ui.place = .studio; ui.showInspector = true; ui.inspectorTab = .voice; model.analyzeReference() }
                 .keyboardShortcut("a", modifiers: [.command, .shift])

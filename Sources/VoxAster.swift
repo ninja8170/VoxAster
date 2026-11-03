@@ -863,8 +863,11 @@ final class AppModel: ObservableObject {
         if selectReference(voice.url, transcript: voice.transcript, expectedSHA256: voice.referenceSHA256) { selectedSection = .clone }
     }
 
+    /// Moves the voice's recording to the Trash (it used to be deleted outright, unrecoverably).
     func deleteVoice(_ voice: SavedVoice) {
-        try? FileManager.default.removeItem(at: voice.url)
+        if (try? FileManager.default.trashItem(at: voice.url, resultingItemURL: nil)) == nil {
+            try? FileManager.default.removeItem(at: voice.url)
+        }
         savedVoices.removeAll { $0.id == voice.id }
         saveVoices()
     }
@@ -1014,20 +1017,43 @@ final class AppModel: ObservableObject {
     }
 
     func prepareProductionChunks() {
-        let cleaned = longFormText.replacingOccurrences(of: "\n", with: " ")
-        let sentences = cleaned.components(separatedBy: ". ")
-        var chunks:[ProductionChunk]=[]; var current=""
-        for sentence in sentences {
-            let s = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
-            if s.isEmpty { continue }
-            let candidate = current.isEmpty ? s : current + ". " + s
-            if candidate.count > 420 && !current.isEmpty {
-                chunks.append(ProductionChunk(text: current + "."))
-                current = s
-            } else { current = candidate }
+        productionChunks = Self.segments(longFormText).map { ProductionChunk(text: $0) }
+    }
+
+    /// Long Form segments: whole sentences (ending . ! ? or …) packed up to `limit` characters.
+    /// Splitting only at ". " left question- or exclamation-heavy scripts as one huge segment,
+    /// and a single sentence longer than the limit is now broken at a comma or, failing that, a space.
+    nonisolated static func segments(_ text: String, limit: Int = 420) -> [String] {
+        let flat = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        guard !flat.isEmpty else { return [] }
+        let ends = try! NSRegularExpression(pattern: #"(?<=[.!?…])["'”’)\]]*\s+"#)
+        var sentences: [String] = [], from = flat.startIndex
+        for match in ends.matches(in: flat, range: NSRange(flat.startIndex..., in: flat)) {
+            guard let range = Range(match.range, in: flat) else { continue }
+            let quoteEnd = flat[range].firstIndex(where: \.isWhitespace) ?? range.upperBound
+            sentences.append(String(flat[from..<quoteEnd]))
+            from = range.upperBound
         }
-        if !current.isEmpty { chunks.append(ProductionChunk(text: current)) }
-        productionChunks = chunks
+        sentences.append(String(flat[from...]))
+        var pieces: [String] = []
+        for sentence in sentences where !sentence.isEmpty {
+            var rest = Substring(sentence)
+            while rest.count > limit {
+                let window = rest.prefix(limit)
+                let cut = window.lastIndex(where: { ",;:".contains($0) }).map { rest.index(after: $0) }
+                    ?? window.lastIndex(of: " ") ?? window.endIndex
+                pieces.append(rest[..<cut].trimmingCharacters(in: .whitespaces))
+                rest = rest[cut...].drop { $0 == " " }
+            }
+            if !rest.isEmpty { pieces.append(String(rest)) }
+        }
+        var chunks: [String] = [], current = ""
+        for piece in pieces {
+            let candidate = current.isEmpty ? piece : current + " " + piece
+            if candidate.count > limit && !current.isEmpty { chunks.append(current); current = piece } else { current = candidate }
+        }
+        if !current.isEmpty { chunks.append(current) }
+        return chunks
     }
 
     func updateChunk(_ index:Int, text:String) {
@@ -1123,15 +1149,21 @@ final class AppModel: ObservableObject {
                     self.errorMessage = error.localizedDescription
                     return
                 }
+                // Every failure says so; these used to leave "Generating sections…" on screen.
                 guard let data,
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String:Any] else {
+                    self.longFormStatus = "Failed"
                     self.errorMessage = "Unreadable response from VoxAster."
                     return
                 }
                 if let message = (json["error"] as? String ?? json["detail"] as? String) {
                     self.longFormStatus = "Failed"; self.errorMessage = message; return
                 }
-                guard let path = json["output"] as? String else { return }
+                guard let path = json["output"] as? String else {
+                    self.longFormStatus = "Failed"
+                    self.errorMessage = "VoxAster did not return the rendered audio."
+                    return
+                }
                 let url = URL(fileURLWithPath: path)
                 if let retryIndex {
                     self.productionChunks[retryIndex].output = url
