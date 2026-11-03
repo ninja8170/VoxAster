@@ -84,6 +84,11 @@ struct CursorTextEditor: NSViewRepresentable {
         return paragraph
     }
 
+    /// Font, line spacing and the appearance-aware text colour every character must carry.
+    private var textAttributes: [NSAttributedString.Key: Any] {
+        [.font: font, .paragraphStyle: paragraph, .foregroundColor: NSColor.labelColor]
+    }
+
     func makeNSView(context: Context) -> NSScrollView {
         let scroll: NSScrollView
         let view: NSTextView
@@ -133,13 +138,16 @@ struct CursorTextEditor: NSViewRepresentable {
                view.shouldChangeText(in: NSRange(location: 0, length: storage.length), replacementString: text) {
                 // Through the text system, so ⌘Z takes back Clear Script, Paste Script, examples and
                 // inserted tokens (setting `string` directly could not be undone).
-                storage.replaceCharacters(in: NSRange(location: 0, length: storage.length), with: text)
+                // With explicit attributes: a bare string here had no colour and drew black on the
+                // dark page (Cast script unreadable in dark mode, 2026-11-03).
+                storage.replaceCharacters(in: NSRange(location: 0, length: storage.length),
+                                          with: NSAttributedString(string: text, attributes: textAttributes))
                 view.didChangeText()
             } else {
                 view.string = text
             }
             if let storage = view.textStorage, storage.length > 0 {
-                storage.addAttributes([.font: font, .paragraphStyle: paragraph], range: NSRange(location: 0, length: storage.length))
+                storage.addAttributes(textAttributes, range: NSRange(location: 0, length: storage.length))
             }
         }
         if context.coordinator.marks != marks, let layout = view.layoutManager {
