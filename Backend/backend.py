@@ -885,5 +885,20 @@ async def personal_generate(
         return JSONResponse(status_code=500, content={"error": f"{type(e).__name__}: {e}"})
 
 
+def exit_with_parent(interval=2.0):
+    """If the app that launched this engine crashes or is force-quit, stop too,
+    so the next launch does not find port 8011 held by an orphaned engine."""
+    import time
+    parent = os.getppid()
+
+    def watch():
+        while True:
+            time.sleep(interval)
+            if os.getppid() != parent:
+                os._exit(0)
+    threading.Thread(target=watch, name="parent-watch", daemon=True).start()
+
+
 if __name__ == "__main__":
+    exit_with_parent()
     uvicorn.run(app, host="127.0.0.1", port=8011, log_level="warning")

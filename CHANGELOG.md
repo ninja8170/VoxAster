@@ -9,7 +9,8 @@
 - Cast: `NAME:` scripts rendered with a voice per character and joined into one scene; designed characters keep their voice from their first line.
 - Performance productions made with 3.7.0 remain renderable.
 - Managed runtimes installed for 3.7.0 need one **Set Up or Repair Runtime** after updating, because the runtime lock records the app version. Existing Python-environment setups are unaffected.
-- README, Getting Started and Privacy updated for the new studio and tools.
+- An engine left running after an app crash or force-quit now shuts itself down, so the next launch does not fail with "The backend exited".
+- README, Getting Started and Privacy updated for the new studio and tools, with new screenshots from a demo profile of synthetic voices.
 
 ## 3.7.0 — first public source release
 

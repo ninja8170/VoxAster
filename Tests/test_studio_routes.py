@@ -83,3 +83,25 @@ class StudioRouteTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ParentWatchTests(unittest.TestCase):
+    def test_engine_exits_when_its_parent_dies(self):
+        import subprocess, sys, time
+        backend_dir = os.path.dirname(backend.__file__)
+        # Parent shell starts the watcher in a grandchild, then exits; the grandchild must follow.
+        code = ("import subprocess, sys; p = subprocess.Popen([sys.executable, '-c', "
+                "'import os, time, threading\\n' + open(%r).read().split('def exit_with_parent')[1].split('if __name__')[0].join(['def exit_with_parent', '']) "
+                "+ '\\nexit_with_parent(0.2)\\nprint(os.getpid(), flush=True)\\ntime.sleep(30)'], stdout=subprocess.PIPE, text=True);"
+                " print(p.stdout.readline().strip(), flush=True)") % os.path.join(backend_dir, 'backend.py')
+        out = subprocess.run([sys.executable, '-c', code], capture_output=True, text=True, timeout=20)
+        pid = int(out.stdout.strip())
+        for _ in range(40):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        else:
+            os.kill(pid, 9)
+            self.fail("engine kept running after its parent exited")

@@ -542,8 +542,9 @@ struct DesignedSignature: View {
             var x = 0.0
             line.move(to: CGPoint(x: 0, y: mid))
             while x <= Double(w) {
-                let phrase = max(0, sin(x * 0.012 + phase)) * (0.55 + 0.45 * sin(x * 0.0041 + phase * 2))
-                let y = sin(x * freq + phase) * cos(x * freq * 0.31 * grain) * phrase
+                // Phrases swell and settle like speech, but never fall silent for long.
+                let phrase = (0.25 + 0.75 * abs(sin(x * 0.011 + phase))) * (0.6 + 0.4 * sin(x * 0.0037 + phase * 2))
+                let y = sin(x * freq + phase) * (0.65 + 0.35 * cos(x * freq * 0.31 * grain + phase)) * phrase
                 line.addLine(to: CGPoint(x: x, y: mid - y * mid * (whisper ? 0.35 : 0.85)))
                 x += 1
             }

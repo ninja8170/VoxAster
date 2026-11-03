@@ -1,4 +1,8 @@
-[![VoxAster — Local AI Voice Studio for macOS. Give voice its own space. Authentic Voice Design interface surrounded by silver acoustic filaments.](docs/art/hero.jpg)](docs/art/hero.jpg)
+[![VoxAster 3.8: the studio window in light mode on ruled paper, above the waveform of a synthetic demo voice drawn as a single ink line ending in a red stylus.](docs/images/3.8/hero.png)](docs/images/3.8/hero.png)
+
+# VoxAster
+
+**A local AI voice studio for macOS.** Every voice leaves a trace.
 
 Design a voice, clone one from a reference, cast a whole scene and fix the words that came out wrong — in one native macOS studio.
 
@@ -20,33 +24,49 @@ See the [changelog](CHANGELOG.md) for details.
 
 ## Inside the studio
 
-Real workspaces. Synthetic demo material. Each plate links to its original, full-resolution screenshot.
+Real VoxAster 3.8.0 windows, captured from a demo profile. Every voice in them was invented with Voice Design, so no real person's voice and no personal recordings appear. The app follows your Mac's light or dark appearance. Select an image for full size.
 
-### Design
+### Voice Clone
 
-[![Design — Find a voice. The actual Voice Design workspace, with silver filaments gathering into a controlled form.](docs/art/design.jpg)](docs/images/voice-design.png)
+[![Voice Clone: the voice plate shows the reference waveform with a seconds ruler; the script sits on ruled paper; Take Doctor reports 94 with every word heard; the newest take is highlighted in the takes roll.](docs/images/3.8/voice-clone.png)](docs/images/3.8/voice-clone.png)
 
-Choose supported speaker attributes and start without a reference recording.
+Drop a short reference onto the voice plate, write on the ruled page and press **⌘G**. The inspector holds the reference's exact words, its measured quality, pitch and pace, and the **Reference Cleaner** for long clips. Every take lands in the roll beneath the page.
 
-### Clone
+### Take Doctor
 
-[![Clone — A familiar voice. A new story. The actual Voice Clone workspace alongside two converging silver forms.](docs/art/clone.jpg)](docs/images/voice-clone.png)
+[![Three variant takes, each scored by Take Doctor: 94, 100 marked best, and 94.](docs/images/3.8/take-doctor.png)](docs/images/3.8/take-doctor.png)
 
-Import a reference, supply its transcript and shape the next take with pronunciation and generation controls.
+Ask for up to four takes with different seeds. Take Doctor transcribes each one on your Mac, scores it against the script and marks the best. A wrong or missing word is underlined in the script; re-render just that sentence and it is spliced back into the take, or add a pronunciation rule in one click.
+
+### Voice Design
+
+[![Voice Design: the Audiobook preset with female, middle-aged, low pitch and British accent descriptors, and the designed voice's drawn signature.](docs/images/3.8/voice-design.png)](docs/images/3.8/voice-design.png)
+
+Describe a speaker with the model's supported attributes, start from a preset such as Audiobook, or let Automatic choose. With no recording to draw, a designed voice gets a drawn signature of its own.
 
 ### Long Form
 
-[![Long Form — Give the story room. The actual editable production chunks beneath a continuous silver signal.](docs/art/long-form.jpg)](docs/images/long-form.png)
+[![Long Form in light mode: a three-chapter script on ruled paper, its 47-second master with a ruler, and three rendered segments below.](docs/images/3.8/long-form.png)](docs/images/3.8/long-form.png)
 
-Edit production chunks individually and retry the section that needs another take.
+Paste a chapter, an article or a narration. It is split at sentence boundaries into segments you can edit and re-render one by one, then joined into a single master.
 
 ### Performance
 
-[![Performance — Make space for the pause. The actual production workspace with two separated sound sculptures and a 500 ms silence motif.](docs/art/performance.jpg)](docs/images/performance.png)
+[![Performance: a frozen production with seed and voice, speech segments with their waveforms and settings, and an 800 ms pause drawn as a flat line.](docs/images/3.8/performance.png)](docs/images/3.8/performance.png)
 
-Prepare speech segments with fixed settings, deliberate pauses and independent retries. This view shows a prepared production before rendering; rebuilding a master becomes available once its speech segments have audio. These controls change timing and audio loudness, not emotional acting.
+Place exact pauses and louder or quieter passages, prepare a production, and re-render any single segment with its original seed. Pauses are drawn as flat line with their exact length. These directions change timing and loudness, not emotional acting.
 
-The interfaces are authentic VoxAster 3.7.0 captures; 3.8.0 redesigned the studio into a single window, so the layout you build today differs from these plates (updated captures will follow). The surrounding silver forms are illustrative artwork, not measured audio or additional controls. No personal recordings or projects appear. [Screenshot provenance](docs/images/README.md) · [Art direction and composition notes](docs/art/README.md).
+### Cast
+
+[![Cast: a five-line scene for Narrator, Mara and Tom, each with their own voice, rendered and joined into a 12-second master.](docs/images/3.8/cast.png)](docs/images/3.8/cast.png)
+
+Write `NAME: line` and give each character a saved or designed voice. The scene renders line by line with live progress, any line can be retried, and the result is joined into one track with the gap you choose.
+
+### Library
+
+[![Library: a sortable table of takes with their waveforms, scripts, kinds and times.](docs/images/3.8/library.png)](docs/images/3.8/library.png)
+
+Takes, voices and Performance productions live in sortable, searchable tables. Double-click to play or to use a voice; right-click to export, reveal or delete. Projects keep their own takes.
 
 ## What you can make
 

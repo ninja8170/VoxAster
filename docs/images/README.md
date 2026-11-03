@@ -1,5 +1,30 @@
 # Product screenshots
 
+## VoxAster 3.8.0 (`3.8/`)
+
+These images show the real native VoxAster 3.8.0 interface and are the ones used in the README.
+
+| Image | What it shows |
+|---|---|
+| [3.8/hero.png](3.8/hero.png) | README banner (see composition note below) |
+| [3.8/voice-clone.png](3.8/voice-clone.png) | Voice Clone with voice plate, ruled script, Take Doctor line and takes roll (dark) |
+| [3.8/take-doctor.png](3.8/take-doctor.png) | Three variant takes scored by Take Doctor, best marked (dark) |
+| [3.8/voice-design.png](3.8/voice-design.png) | Voice Design with the Audiobook preset and a designed voice's drawn signature (dark) |
+| [3.8/long-form.png](3.8/long-form.png) | Long Form master and three rendered segments (light) |
+| [3.8/performance.png](3.8/performance.png) | A prepared and rendered Performance production with an 800 ms pause (dark) |
+| [3.8/cast.png](3.8/cast.png) | A three-character Cast scene rendered and joined (dark) |
+| [3.8/library.png](3.8/library.png) | The Takes table in the Library (dark) |
+
+### Capture and privacy
+
+Captured from the 3.8.0 build launched with an isolated demo home (`CFFIXED_USER_HOME`) and data root, so the personal Library, History, voices, projects and drafts were never read. All four demo voices (Harbour Narrator, Mara, Tom, Studio Host) were invented with Voice Design using fixed seeds; none is a person's recording. Every take, Long Form master, Performance production and Cast scene shown was generated for real through the app from those voices. The scripts were written for these screenshots.
+
+Each window was captured on its own at 1440 × 900 without a shadow and saved as an optimized PNG. No UI was fabricated or retouched.
+
+The banner composes, on a ruled-paper background, the unmodified light-mode Voice Clone window and the actual waveform of the synthetic "Mara" voice drawn as an ink line with a seconds ruler and a red stylus. It adds no text.
+
+## VoxAster 3.7.0 (archived)
+
 These images show the real native VoxAster 3.7.0 interface from validated source commit `7af18b8c3297c3bd0728f26aa912b65e1c2ec948`.
 
 | Image | Workspace |

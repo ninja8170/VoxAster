@@ -174,7 +174,8 @@ struct VoicePlate: View {
                     .lineLimit(2).minimumScaleFactor(0.75)
                 Text(particulars)
                     .font(.traceValue).foregroundStyle(Trace.graphite)
-                    .lineLimit(2)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
                 if !designed && model.referenceURL != nil && !model.referenceAnalysisReady {
                     Button("Analyze voice") {
                         ui.showInspector = true; ui.inspectorTab = .voice; model.analyzeReference()
@@ -568,7 +569,7 @@ struct TakesRoll: View {
             }
             .padding(.horizontal, 14).padding(.vertical, 9)
             Hairline()
-            if takes.isEmpty && !model.isGenerating && model.variantURLs.isEmpty {
+            if takes.isEmpty && !model.isGenerating && (model.variantURLs.isEmpty || model.voiceSource != .reference) {
                 EmptyNote(title: "Your takes collect here", detail: model.modelReady ? "Write a line above and press ⌘G." : model.status)
             } else {
                 ScrollView {
@@ -579,7 +580,7 @@ struct TakesRoll: View {
                                 .padding(.horizontal, 14).padding(.vertical, 10)
                             Hairline()
                         }
-                        if !model.variantURLs.isEmpty {
+                        if !model.variantURLs.isEmpty && model.voiceSource == .reference {
                             VariantLanes().padding(.horizontal, 14).padding(.vertical, 10)
                             Hairline()
                         }
