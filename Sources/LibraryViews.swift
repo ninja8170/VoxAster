@@ -63,7 +63,7 @@ struct TakesLibrary: View {
                 .contextMenu(forSelectionType: AppModel.Generation.ID.self) { ids in
                     let picked = items.filter { ids.contains($0.id) }
                     if let first = picked.first {
-                        Button("Play") { model.outputPlayer.toggle(first.url) }
+                        PlayMenuItem(player: model.outputPlayer, url: first.url)
                         Button("Open in Studio") { model.outputURL = first.url; model.setStudioMode(.clone); ui.place = .studio }
                         Button("Export…") { model.exportOutput(first.url) }
                         Button("Show in Finder") { model.reveal(first.url) }
@@ -138,7 +138,7 @@ struct VoicesLibrary: View {
                     if let voice = model.savedVoices.first(where: { ids.contains($0.id) }) {
                         Button("Use in Studio") { model.useVoice(voice); ui.place = .studio }
                         Button("Compare in Engine Lab") { model.selectEngineLabVoice(voice); openWindow(id: "engine-lab") }
-                        Button("Play") { model.referencePlayer.toggle(voice.url) }
+                        PlayMenuItem(player: model.referencePlayer, url: voice.url)
                         Button("Show in Finder") { model.reveal(voice.url) }
                         Divider()
                         Button("Delete Voice", role: .destructive) { model.deleteVoice(voice) }
@@ -219,6 +219,7 @@ struct ScenesLibrary: View {
     @State private var selection = Set<CastStore.Scene.ID>()
     @State private var renaming: CastStore.Scene?
     @State private var newName = ""
+    @State private var masters: [CastStore.Scene.ID: URL] = [:]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -268,7 +269,7 @@ struct ScenesLibrary: View {
                     if let scene = cast.scenes.first(where: { ids.contains($0.id) }) {
                         Button("Open in Cast") { open(scene) }.disabled(cast.busy)
                         if let url = masterURL(scene) {
-                            Button("Play") { model.outputPlayer.toggle(url) }
+                            PlayMenuItem(player: model.outputPlayer, url: url)
                             Button("Export…") { model.exportOutput(url) }
                         }
                         Button("Rename…") { newName = scene.name; renaming = scene }
@@ -282,7 +283,8 @@ struct ScenesLibrary: View {
                 }
             }
         }
-        .onAppear { cast.loadScenes() }
+        .onAppear { cast.loadScenes(); findMasters() }
+        .onChange(of: cast.scenes) { _, _ in findMasters() }
         .sheet(item: $renaming) { scene in
             VStack(alignment: .leading, spacing: 12) {
                 Text("Rename Scene").font(.traceSection)
@@ -298,9 +300,19 @@ struct ScenesLibrary: View {
         }
     }
 
-    private func masterURL(_ scene: CastStore.Scene) -> URL? {
-        scene.master.map { cast.folder(for: scene.id).appendingPathComponent($0) }
-            .flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }
+    private func masterURL(_ scene: CastStore.Scene) -> URL? { masters[scene.id] }
+
+    /// Which scenes have their joined audio on disk. Checked when the list changes; checking
+    /// inside every row on every redraw hit the disk once per scene, many times a second.
+    private func findMasters() {
+        var found: [CastStore.Scene.ID: URL] = [:]
+        for scene in cast.scenes {
+            if let name = scene.master {
+                let url = cast.folder(for: scene.id).appendingPathComponent(name)
+                if FileManager.default.fileExists(atPath: url.path) { found[scene.id] = url }
+            }
+        }
+        masters = found
     }
 
     private func speakers(_ scene: CastStore.Scene) -> String {

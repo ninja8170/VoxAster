@@ -116,7 +116,22 @@ final class AudioPlayerController: NSObject, ObservableObject, AVAudioPlayerDele
 
     func duration(for url: URL) -> Double {
         if loadedURL == url { return duration }
-        return (try? AVAudioPlayer(contentsOf: url).duration) ?? 0
+        return Self.fileDuration(url)
+    }
+
+    /// A file's length, read once per version of the file. Waveform rows ask on every redraw
+    /// (12 times a second while anything plays); opening each file every time made long Takes
+    /// lists stutter. Keyed on size and modification date, so a file rewritten in place re-reads.
+    private static var durations: [URL: (stamp: String, seconds: Double)] = [:]
+    static func fileDuration(_ url: URL) -> Double {
+        let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        guard let values, let size = values.fileSize else { return 0 }
+        let stamp = "\(size)-\(values.contentModificationDate?.timeIntervalSince1970 ?? 0)"
+        if let cached = durations[url], cached.stamp == stamp { return cached.seconds }
+        let seconds = (try? AVAudioPlayer(contentsOf: url).duration) ?? 0
+        if durations.count > 2000 { durations.removeAll() }
+        durations[url] = (stamp, seconds)
+        return seconds
     }
 
     func seek(_ url: URL, to value: Double) {

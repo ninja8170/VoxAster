@@ -1461,6 +1461,8 @@ extension CastStore {
     // MARK: Markers
 
     func addMarker(at t: Double, _ model: AppModel) {
+        // Pressing M twice in the same place used to stack two markers on top of each other.
+        guard !markers.contains(where: { abs($0.t - max(0, t)) < 0.05 }) else { return }
         markers.append(Marker(t: max(0, t), name: "Marker \(markers.count + 1)"))
         markers.sort { $0.t < $1.t }
         commitEdit(model)

@@ -575,6 +575,16 @@ struct PlayToggle: View {
     }
 }
 
+/// "Play" / "Pause" for a context menu, current when the menu opens.
+struct PlayMenuItem: View {
+    @ObservedObject var player: AudioPlayerController
+    let url: URL
+
+    var body: some View {
+        Button(player.isPlaying(url) ? "Pause" : "Play") { player.toggle(url) }
+    }
+}
+
 /// The same, as a text button ("Listen" / "Stop").
 struct ListenToggle: View {
     @ObservedObject var player: AudioPlayerController

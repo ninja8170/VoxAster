@@ -373,7 +373,7 @@ struct StudioSidebar: View {
                     .buttonStyle(.plain)
                     .contextMenu {
                         Button("Use Voice") { model.useVoice(voice); ui.place = .studio }
-                        Button("Play") { model.referencePlayer.toggle(voice.url) }
+                        PlayMenuItem(player: model.referencePlayer, url: voice.url)
                         Button("Show in Finder") { model.reveal(voice.url) }
                         Divider()
                         Button("Delete Voice…", role: .destructive) { model.deleteVoice(voice) }
