@@ -554,3 +554,33 @@ struct DesignedSignature: View {
         .accessibilityHidden(true)
     }
 }
+
+/// A play / pause button for one file. It observes the player itself: the players live inside
+/// AppModel, and a view that only observes the model never hears them change, so a button that
+/// read `model.outputPlayer.isPlaying(url)` stayed on "play" while the file played.
+struct PlayToggle: View {
+    @ObservedObject var player: AudioPlayerController
+    let url: URL
+    var help = "Play"
+
+    var body: some View {
+        let on = player.isPlaying(url)
+        Button { player.toggle(url) } label: {
+            Image(systemName: on ? "pause.fill" : "play.fill")
+                .foregroundStyle(on ? Trace.record : Trace.ink)
+                .frame(width: 18)
+        }
+        .buttonStyle(.borderless)
+        .help(on ? "Pause" : help)
+    }
+}
+
+/// The same, as a text button ("Listen" / "Stop").
+struct ListenToggle: View {
+    @ObservedObject var player: AudioPlayerController
+    let url: URL
+
+    var body: some View {
+        Button(player.isPlaying(url) ? "Stop" : "Listen") { player.toggle(url) }
+    }
+}

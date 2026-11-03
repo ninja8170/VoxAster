@@ -15,8 +15,7 @@ struct SceneEditor: View {
     @State private var editing: CastStore.Clip?
     @State private var draft = ""
     @FocusState private var focused: Bool
-    @State private var loop: ClosedRange<Double>?
-    @State private var looping = false
+    @State private var loop: ClosedRange<Double>?   // a region means playback loops; clearing it stops
     @State private var renaming: CastStore.Marker?
     @State private var markerName = ""
     @State private var paceOpen = false
@@ -41,7 +40,12 @@ struct SceneEditor: View {
         }
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         .background(Trace.ground)
-        .onExitCommand { ui.sceneEditor = false }
+        .background {
+            // Esc peels back one thing at a time: the loop region, then the clip selection, then
+            // the editor itself. (Done no longer owns Esc, or it closed the editor first.)
+            Button("", action: escape).keyboardShortcut(.cancelAction).opacity(0).frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+        }
         .focusable()
         .focused($focused)
         .focusEffectDisabled()
@@ -53,13 +57,21 @@ struct SceneEditor: View {
             if press.characters.lowercased() == "m" { cast.addMarker(at: position, model) } else { toggleLoop() }
             return .handled
         }
-        .onChange(of: player.currentTime) { _, t in
-            // Loop playback: back to the start of the region whenever the playhead leaves it.
-            guard looping, let loop, let master = cast.masterURL, player.isPlaying(master),
-                  t >= loop.upperBound || t < loop.lowerBound - 0.25 else { return }
+        .onChange(of: player.currentTime) { old, t in
+            // Loop playback: back to the start when the playhead runs out of the end of the region.
+            // Only a crossing from inside counts, so clicking or scrubbing outside it is left alone.
+            guard let loop, let master = cast.masterURL, player.isPlaying(master),
+                  old >= loop.lowerBound - 0.25, old < loop.upperBound, t >= loop.upperBound else { return }
             player.seek(master, to: loop.lowerBound)
         }
-        .onChange(of: loop) { _, region in if region == nil { looping = false } else if !looping { looping = true } }
+        .onChange(of: loop) { _, region in
+            // Keep the region inside the mix, ending just short of it so the wrap happens before
+            // the file finishes; a sliver too small to loop is dropped.
+            guard let region else { return }
+            let end = (cast.masterURL.map { player.duration(for: $0) } ?? cast.timelineDuration) - 0.12
+            let clamped = max(0, region.lowerBound)...min(region.upperBound, end)
+            if clamped.upperBound - clamped.lowerBound < 0.1 { loop = nil } else if clamped != region { loop = clamped }
+        }
         .sheet(item: $editing) { clip in editSheet(clip) }
         .sheet(item: $renaming) { marker in
             VStack(alignment: .leading, spacing: 12) {
@@ -78,13 +90,20 @@ struct SceneEditor: View {
         }
     }
 
+    private var looping: Bool { loop != nil }
+
+    /// L / the loop button: with no region, loop the selected clip (or 4 s from the playhead);
+    /// with one, clear it.
     private func toggleLoop() {
         if loop == nil {
-            // No region yet: loop the selected clip, or the next 4 s from the playhead.
             if let clip = selected { loop = clip.start...clip.end } else { loop = position...(position + 4) }
         } else {
-            looping.toggle()
+            loop = nil
         }
+    }
+
+    private func escape() {
+        if loop != nil { loop = nil } else if selection != nil { selection = nil } else { ui.sceneEditor = false }
     }
 
     // MARK: Keys
@@ -97,10 +116,7 @@ struct SceneEditor: View {
         case .leftArrow, .rightArrow:
             let sign: Double = press.key == .leftArrow ? -1 : 1
             if let clip = selected {
-                let landing = cast.landing(clip.id, proposed: clip.start + sign * (shift ? 0.01 : 0.05),
-                                           snapping: false, playhead: nil, tolerance: 0)
-                cast.editClip(clip.id) { $0.start = landing.start }
-                cast.commitEdit(model)
+                nudge(clip, by: sign * (shift ? 0.01 : 0.05))
             } else if let master = cast.masterURL {
                 player.seek(master, to: max(0, position + sign))
             }
@@ -119,6 +135,14 @@ struct SceneEditor: View {
             return .ignored
         }
         return .handled
+    }
+
+    /// Moves a clip by a small step, through the same overlap guard as dragging. (The bar's
+    /// nudge buttons used to skip it and could push a clip onto its neighbour.)
+    private func nudge(_ clip: CastStore.Clip, by step: Double) {
+        let landing = cast.landing(clip.id, proposed: clip.start + step, snapping: false, playhead: nil, tolerance: 0)
+        cast.editClip(clip.id) { $0.start = landing.start }
+        cast.commitEdit(model)
     }
 
     // MARK: Editing a line's words
@@ -201,8 +225,8 @@ struct SceneEditor: View {
                     .background(looping ? Trace.cobaltFill : Color.clear, in: RoundedRectangle(cornerRadius: 5))
             }
             .buttonStyle(.plain)
-            .help("Loop the region (L). Drag on the ruler to set it; with none, L loops the selected clip.")
-            .contextMenu { Button("Clear Loop Region") { loop = nil } }
+            .help(looping ? "Stop looping and clear the region (L or Esc)"
+                          : "Loop the selected clip, or 4 s from the playhead (L). ⇧-drag on the ruler to loop any span.")
             transportButton("flag", "Add a marker at the playhead (M)") { cast.addMarker(at: position, model) }
             divider
             transportButton("arrow.uturn.backward", "Undo (⌘Z)") { cast.undo(model) }
@@ -272,8 +296,8 @@ struct SceneEditor: View {
             Button(cast.sceneID == nil ? "Save Scene" : "Save") { cast.saveScene() }
                 .disabled(cast.busy)
             Button("Done") { ui.sceneEditor = false }
-                .keyboardShortcut(.cancelAction)
                 .buttonStyle(.borderedProminent)
+                .help("Close the editor (Esc)")
     }
 
     private var divider: some View { Rectangle().fill(Trace.rule).frame(width: 1, height: 22) }
@@ -314,8 +338,8 @@ struct SceneEditor: View {
                 field("Length", String(format: "%.2f s", clip.length))
                 field("End", timecode(clip.end, tenths: true))
                 HStack(spacing: 2) {
-                    Button { edit(clip) { $0.start -= 0.05 } } label: { Image(systemName: "chevron.left") }.help("Nudge 50 ms earlier")
-                    Button { edit(clip) { $0.start += 0.05 } } label: { Image(systemName: "chevron.right") }.help("Nudge 50 ms later")
+                    Button { nudge(clip, by: -0.05) } label: { Image(systemName: "chevron.left") }.help("Nudge 50 ms earlier (←)")
+                    Button { nudge(clip, by: 0.05) } label: { Image(systemName: "chevron.right") }.help("Nudge 50 ms later (→)")
                 }
                 Stepper(value: Binding(get: { clip.gainDb }, set: { value in edit(clip) { $0.gainDb = value } }), in: -12...6, step: 1) {
                     Text(String(format: "%+.0f dB", clip.gainDb)).font(.traceValue.monospacedDigit())
@@ -351,7 +375,7 @@ struct SceneEditor: View {
                     .disabled(!cast.canRetry(model))
                     .help(cast.lines[safe: clip.unit]?.parts == nil ? "Render this line again" : "Render this passage again")
             } else {
-                Text("Click a clip to select it · drag to move, edges to trim (hold ⌘ to stop snapping) · double-click to edit its words · ←/→ nudge · Tab next clip · M marker · L loop")
+                Text("Click a clip to select it · drag to move, edges to trim (⌘ stops snapping) · double-click to edit its words · drag the ruler to scrub, ⇧-drag to loop · ←/→ nudge · Tab next clip · M marker · L loop · Esc clears")
                     .font(.traceCaption).foregroundStyle(Trace.pencil)
             }
     }

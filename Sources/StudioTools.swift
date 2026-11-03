@@ -1116,13 +1116,16 @@ extension CastStore {
             try? await Task.sleep(nanoseconds: 450_000_000)
             guard !Task.isCancelled, !busy, !mixing, missing.isEmpty else { return }
             let player = model.outputPlayer
+            let loaded = masterURL != nil && player.loadedURL == masterURL
             let playing = masterURL.map { player.isPlaying($0) } ?? false
             let position = masterURL.map { player.currentTime(for: $0) } ?? 0
             guard await assemble(model, record: false) else { return }
             if sceneID != nil { saveScene(announce: false) }
-            if playing, let master = masterURL {
-                player.toggle(master)
+            // The new mix is a new file: carry the playhead over, paused or playing. (While paused
+            // it used to vanish, and the next Play started again from the top.)
+            if loaded, let master = masterURL {
                 player.seek(master, to: position)
+                if playing && !player.isPlaying(master) { player.toggle(master) }
             }
         }
     }

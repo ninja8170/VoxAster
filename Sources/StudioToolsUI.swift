@@ -29,9 +29,7 @@ struct CleanerSection: View {
                             .font(.traceCaption).foregroundStyle(Trace.record)
                     }
                     HStack(spacing: 8) {
-                        Button { model.referencePlayer.toggle(result.url) } label: {
-                            Text(model.referencePlayer.isPlaying(result.url) ? "Stop" : "Listen")
-                        }
+                        ListenToggle(player: model.referencePlayer, url: result.url)
                         Button("Use This Clip") { cleaner.use(model) }
                         Button("Use & Save…") { name = model.voiceDisplayName + " (clean)"; showSave = true }
                     }

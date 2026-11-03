@@ -40,12 +40,7 @@ struct TakesLibrary: View {
             } else {
                 Table(rows, selection: $selection, sortOrder: $sortOrder) {
                     TableColumn("") { item in
-                        Button { model.outputPlayer.toggle(item.url) } label: {
-                            Image(systemName: model.outputPlayer.isPlaying(item.url) ? "pause.fill" : "play.fill")
-                                .foregroundStyle(model.outputPlayer.isPlaying(item.url) ? Trace.record : Trace.ink)
-                        }
-                        .buttonStyle(.borderless)
-                        .help("Play")
+                        PlayToggle(player: model.outputPlayer, url: item.url)
                     }
                     .width(28)
                     TableColumn("Trace") { item in
@@ -122,11 +117,7 @@ struct VoicesLibrary: View {
             } else {
                 Table(model.savedVoices, selection: $selection) {
                     TableColumn("") { voice in
-                        Button { model.referencePlayer.toggle(voice.url) } label: {
-                            Image(systemName: model.referencePlayer.isPlaying(voice.url) ? "pause.fill" : "play.fill")
-                                .foregroundStyle(model.referencePlayer.isPlaying(voice.url) ? Trace.record : Trace.ink)
-                        }
-                        .buttonStyle(.borderless)
+                        PlayToggle(player: model.referencePlayer, url: voice.url)
                     }
                     .width(28)
                     TableColumn("Name") { voice in Text(voice.name).font(.traceBody.weight(.medium)) }
@@ -245,12 +236,7 @@ struct ScenesLibrary: View {
                 Table(cast.scenes, selection: $selection) {
                     TableColumn("") { scene in
                         if let url = masterURL(scene) {
-                            Button { model.outputPlayer.toggle(url) } label: {
-                                Image(systemName: model.outputPlayer.isPlaying(url) ? "pause.fill" : "play.fill")
-                                    .foregroundStyle(model.outputPlayer.isPlaying(url) ? Trace.record : Trace.ink)
-                            }
-                            .buttonStyle(.borderless)
-                            .help("Play the joined scene")
+                            PlayToggle(player: model.outputPlayer, url: url, help: "Play the joined scene")
                         }
                     }
                     .width(28)

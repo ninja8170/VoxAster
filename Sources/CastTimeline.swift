@@ -15,6 +15,7 @@ struct CastTimeline: View {
     var onRenameMarker: (CastStore.Marker) -> Void = { _ in }
     @Binding var loop: ClosedRange<Double>?
     @State private var loopAnchor: Double?
+    @State private var scrubbing = false
     @State private var origin: CastStore.Clip?    // the clip as it was when the drag began
     @State private var fitted = false
     @State private var guide: Double?             // snap guide line while dragging
@@ -95,7 +96,13 @@ struct CastTimeline: View {
             }
             .allowsHitTesting(false)
             grid(width: width, height: height, lanes: lanes.count, laneHeight: laneHeight)
-                .onTapGesture { selection = nil }
+                .onTapGesture { point in
+                    // Empty track space: deselect, and (while paused) put the playhead there.
+                    selection = nil
+                    if let master = cast.masterURL, !player.isPlaying(master) {
+                        player.seek(master, to: max(0, Double(point.x / pps)))
+                    }
+                }
             if let loop {
                 Rectangle().fill(Trace.cobalt.opacity(0.08))
                     .overlay(alignment: .leading) { Rectangle().fill(Trace.cobalt.opacity(0.6)).frame(width: 1) }
@@ -110,6 +117,7 @@ struct CastTimeline: View {
                     .allowsHitTesting(false)
             }
             ruler(width: width)
+            if let loop { loopBand(loop) }
             ForEach(cast.markers) { marker in markerFlag(marker) }
             ForEach(cast.clips) { clip in
                 if let row = lanes.firstIndex(of: clip.lane) {
@@ -180,18 +188,49 @@ struct CastTimeline: View {
         .frame(width: width, height: Self.rulerHeight)
         .contentShape(Rectangle())
         .gesture(DragGesture(minimumDistance: 0).onChanged { value in
-            guard abs(value.translation.width) > 3 else { return }
-            let a = loopAnchor ?? max(0, Double(value.startLocation.x / pps))
-            loopAnchor = a
+            guard let master = cast.masterURL else { return }
             let b = max(0, Double(value.location.x / pps))
-            loop = min(a, b)...max(a, b)
+            if loopAnchor == nil && !scrubbing {
+                guard abs(value.translation.width) > 3 else { return }
+                // Decided once per drag: ⇧ marks a loop region, a plain drag moves the playhead.
+                if NSEvent.modifierFlags.contains(.shift) {
+                    loopAnchor = max(0, Double(value.startLocation.x / pps))
+                } else {
+                    scrubbing = true
+                }
+            }
+            if let a = loopAnchor {
+                loop = min(a, b)...max(a, b)
+            } else {
+                player.seek(master, to: b)
+            }
         }.onEnded { value in
-            defer { loopAnchor = nil }
-            guard abs(value.translation.width) <= 3, let master = cast.masterURL else { return }
+            defer { loopAnchor = nil; scrubbing = false }
+            guard loopAnchor == nil, !scrubbing, let master = cast.masterURL else { return }
             player.seek(master, to: max(0, Double(value.location.x / pps)))
             if !player.isPlaying(master) { player.toggle(master) }
         })
-        .help("Click to play from here · drag to set a loop region")
+        .contextMenu {
+            if loop != nil { Button("Clear Loop Region") { loop = nil } }
+        }
+        .help("Click to play from here · drag to scrub · ⇧-drag to set a loop region")
+    }
+
+    /// The loop region as a bar along the ruler, with a button that clears it.
+    private func loopBand(_ region: ClosedRange<Double>) -> some View {
+        let x = CGFloat(region.lowerBound) * pps, w = max(1, CGFloat(region.upperBound - region.lowerBound) * pps)
+        return ZStack(alignment: .topLeading) {
+            Rectangle().fill(Trace.cobalt.opacity(0.55)).frame(width: w, height: 4)
+                .offset(x: x, y: Self.rulerHeight - 4)
+                .allowsHitTesting(false)
+            Button { loop = nil } label: {
+                Image(systemName: "xmark.circle.fill").font(.system(size: 11))
+                    .foregroundStyle(Color.white, Trace.cobaltFill)
+            }
+            .buttonStyle(.plain)
+            .offset(x: x + w + 3, y: Self.rulerHeight - 15)
+            .help("Clear the loop region (Esc)")
+        }
     }
 
     private func markerFlag(_ marker: CastStore.Marker) -> some View {
@@ -321,7 +360,9 @@ struct CastTimeline: View {
     private func edge(_ clip: CastStore.Clip, leading: Bool) -> some View {
         Rectangle().fill(Color.clear).frame(width: 7)
             .contentShape(Rectangle())
-            .onHover { inside in if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() } }
+            // Set, not push/pop: an unmatched push (clip removed under the pointer) left the
+            // resize cursor stuck.
+            .onHover { inside in (inside ? NSCursor.resizeLeftRight : NSCursor.arrow).set() }
             .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .named(Self.space)).onChanged { value in
                 let base = origin ?? clip
                 if origin == nil { origin = clip; selection = clip.id }
@@ -372,8 +413,9 @@ struct TrackPanel: View {
                     Image(systemName: "speaker.fill").font(.system(size: 9)).foregroundStyle(Trace.pencil)
                     Slider(value: Binding(get: { cast.tracks.gain[lane] ?? 0 }, set: { value in
                         cast.tracks.gain[lane] = (value * 2).rounded() / 2
-                        cast.commitEdit(model)
-                    }), in: -24...6)
+                    }), in: -24...6) { editing in
+                        if !editing { cast.commitEdit(model) }   // one undo step per drag, not per tick
+                    }
                     .controlSize(.mini)
                     Text(String(format: "%+.1f", cast.tracks.gain[lane] ?? 0)).font(.traceValue.monospacedDigit())
                         .foregroundStyle(Trace.graphite).frame(width: 34, alignment: .trailing)

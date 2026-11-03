@@ -78,6 +78,18 @@ final class AudioPlayerController: NSObject, ObservableObject, AVAudioPlayerDele
     private var player: AVAudioPlayer?
     private var timer: Timer?
 
+    /// One sound at a time: starting any player pauses the others (a voice in the Library
+    /// played over a take that was already playing).
+    private static let others = NSHashTable<AudioPlayerController>.weakObjects()
+    override init() { super.init(); Self.others.add(self) }
+
+    func pause() {
+        guard let player, player.isPlaying else { return }
+        player.pause()
+        isPlaying = false
+        stopTimer()
+    }
+
     func load(_ url: URL) {
         if loadedURL == url, player != nil { return }
         do {
@@ -121,6 +133,7 @@ final class AudioPlayerController: NSObject, ObservableObject, AVAudioPlayerDele
             isPlaying = false
             stopTimer()
         } else {
+            for other in Self.others.allObjects where other !== self { other.pause() }
             player.play()
             isPlaying = true
             startTimer()

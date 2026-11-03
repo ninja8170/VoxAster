@@ -418,10 +418,7 @@ struct SegmentRow: View {
                 .foregroundStyle(chunk.state == "Complete" ? Trace.ok : (chunk.state == "Generating" ? Trace.record : Trace.graphite))
                 .frame(width: 76, alignment: .trailing)
             if let output = chunk.output {
-                Button { model.outputPlayer.toggle(output) } label: {
-                    Image(systemName: model.outputPlayer.isPlaying(output) ? "pause.fill" : "play.fill")
-                }
-                .buttonStyle(.borderless).help("Play segment")
+                PlayToggle(player: model.outputPlayer, url: output, help: "Play segment")
             }
             Button { model.retryChunk(index) } label: { Image(systemName: "arrow.clockwise") }
                 .buttonStyle(.borderless)
