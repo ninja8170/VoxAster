@@ -1,10 +1,12 @@
 # Release-readiness audit — 2026-10-04
 
+> Historical record of the first public source release (3.7.0). Later releases follow the same gates: `test.command`, `tools/audit-release.py` and the publication scan.
+
 ## Verdict: READY FOR PUBLIC GITHUB RELEASE
 
 Scope: the reviewed **VoxAster 3.7.0 application source**, including required third-party notices, with separately downloaded inference dependencies. This is not approval to redistribute model weights, publish an unrestricted commercial model product, re-enable training, ship a self-contained binary, or skip owner approval for publication.
 
-The previous licence-less tokenizer blocker is resolved by using the official Boson source at an immutable, independently hash-verified revision and removing the training/model-improvement workflow. The owner confirmed the Boson 100,000 annual-active-user threshold does not apply. The licence agreements, acceptable-use restrictions and other eligibility conditions still apply to users and distributors. [THIRD_PARTY.md](THIRD_PARTY.md) distinguishes MIT app code, Apache-2.0 OmniVoice code, non-commercial OmniVoice weights and restricted Boson/Meta community terms.
+The previous licence-less tokenizer blocker is resolved by using the official Boson source at an immutable, independently hash-verified revision and removing the training/model-improvement workflow. The owner confirmed the Boson 100,000 annual-active-user threshold does not apply. The licence agreements, acceptable-use restrictions and other eligibility conditions still apply to users and distributors. [THIRD_PARTY.md](../THIRD_PARTY.md) distinguishes MIT app code, Apache-2.0 OmniVoice code, non-commercial OmniVoice weights and restricted Boson/Meta community terms.
 
 ## Local source and privacy
 
@@ -14,7 +16,7 @@ The prior private-email remediation remains intact. Publication scanning checks 
 
 ## Licensing remediation
 
-- Classified runtime inference, training/model improvement and documentation/test/provenance usages before editing. See [TOKENIZER.md](docs/TOKENIZER.md).
+- Classified runtime inference, training/model improvement and documentation/test/provenance usages before editing. See [TOKENIZER.md](TOKENIZER.md).
 - Pinned official Boson audio tokenizer revision `815a03f1b57dcb5ae918db415f22cd0c8a6f0f54`; SHA-256 verifies weights, inference config, preprocessor config and licence. All three inference artifacts match the bytes previously embedded in the pinned base model.
 - All three OmniVoice model-loading paths use a temporary local view containing the verified official tokenizer. Missing/changed files fail before upstream loading; its mirror fallback is never used. No installed package rewrite or global monkeypatch is performed.
 - Kept package 0.2.1 / commit `08be0b4ccbac3e13e374e86fbfead4b4cac343e2` and base model/text tokenizer `c5fdb5ccb189668d56333f77ba2629f4cd7535f4` unchanged.
@@ -40,4 +42,4 @@ The existing dependency environment was reused; no package upgrades were made. O
 
 ## Release boundary and next action
 
-Use the repository's public-safe identity for the release checkpoint, and re-run scanning and release validation on that exact committed state before tagging or publication. Follow [RELEASE_PLAN.md](docs/RELEASE_PLAN.md) for a separately approved new public destination. Do not reuse/publish the old unsanitized remote or mirror-push private refs. No models/environments are bundled. Source builds are ad-hoc signed, not Developer ID signed or notarized. Future binaries, derived models/software, commercial uses and training require their own terms/distribution review.
+Use the repository's public-safe identity for the release checkpoint, and re-run scanning and release validation on that exact committed state before tagging or publication. Follow [RELEASE_PLAN.md](RELEASE_PLAN.md) for a separately approved new public destination. Do not reuse/publish the old unsanitized remote or mirror-push private refs. No models/environments are bundled. Source builds are ad-hoc signed, not Developer ID signed or notarized. Future binaries, derived models/software, commercial uses and training require their own terms/distribution review.

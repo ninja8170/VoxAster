@@ -1,12 +1,12 @@
-# Build and use VoxAster 3.8.1
+# Build and use VoxAster 3.8.2
 
 VoxAster's public release is **source-only**. There is no official downloadable `.app` or installer. The original app code/icons are MIT licensed; models and dependencies have their own terms. Start with the [README quick start](../README.md#get-started) and [third-party licences](../THIRD_PARTY.md).
 
 ## Choose your source
 
-The README commands check out the immutable `v3.8.1` release tag. Git may describe this as a detached HEAD; that is expected when building a tagged release. Contributors should use a working branch for changes.
+The README commands check out the immutable `v3.8.2` release tag. Git may describe this as a detached HEAD; that is expected when building a tagged release. Contributors should use a working branch for changes.
 
-Alternatively, download **Source code (zip)** for the [v3.8.1 tag](https://github.com/ninja8170/VoxAster/archive/refs/tags/v3.8.1.zip), extract it and open Terminal in the extracted folder. After installing the documented prerequisites, run:
+Alternatively, download **Source code (zip)** for the [v3.8.2 tag](https://github.com/ninja8170/VoxAster/archive/refs/tags/v3.8.2.zip), extract it and open Terminal in the extracted folder. After installing the documented prerequisites, run:
 
 ```sh
 ./setup-runtime.command
@@ -95,7 +95,7 @@ git diff --check
 python3 -B tools/audit-release.py
 ```
 
-Tests use temporary data and mocked synthesis where appropriate. Real model startup and listening acceptance are separate. Optional F5 inference is not provisioned by core setup; see [engine support](TRAINING.md). Training/fine-tuning is not available.
+Tests use temporary data and mocked synthesis where appropriate. Real model startup and listening acceptance are separate. Optional F5 inference is not provisioned by core setup; see [engine support](ENGINES.md). Training/fine-tuning is not available.
 
 ## Troubleshooting
 

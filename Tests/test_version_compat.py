@@ -6,7 +6,7 @@ from provenance import MANIFEST, compatible_production_runtime
 
 class VersionCompatibilityTests(unittest.TestCase):
     def test_previous_release_productions_stay_renderable(self):
-        for version in ('3.7.0', '3.8.0'):
+        for version in ('3.7.0', '3.8.0', '3.8.1'):
             recorded = copy.deepcopy(MANIFEST); recorded['native_app_version'] = version
             self.assertTrue(compatible_production_runtime(recorded), version)
 

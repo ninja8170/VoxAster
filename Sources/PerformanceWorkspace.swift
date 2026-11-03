@@ -35,7 +35,7 @@ enum PerformanceDirection {
 extension AppModel {
     private var performanceBackendUnavailableMessage: String {
         if status == "Incompatible backend" {
-            return "Performance requires the VoxAster 3.8.1 backend. Close the older app/backend, reopen this build, and wait for Ready."
+            return "Performance requires the VoxAster 3.8.2 backend. Close the older app/backend, reopen this build, and wait for Ready."
         }
         return "The OmniVoice model is still loading. Wait for the status to show Ready before preparing a Performance production."
     }
@@ -70,7 +70,7 @@ extension AppModel {
             let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
             let message: String
             if statusCode == 404 {
-                message = "The Performance API is unavailable on the backend at port 8011. Close any older app/backend, reopen VoxAster 3.8.1, and wait for Ready."
+                message = "The Performance API is unavailable on the backend at port 8011. Close any older app/backend, reopen VoxAster 3.8.2, and wait for Ready."
             } else {
                 message = detail?["detail"] as? String ?? detail?["error"] as? String ??
                     "Performance request failed with HTTP status \(statusCode)."

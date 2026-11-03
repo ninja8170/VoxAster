@@ -8,40 +8,42 @@ Design a voice, clone one from a reference, cast a whole scene, edit it on a mul
 
 **Apple Silicon · macOS 14+ · Local processing**
 
-[Get started](#get-started) · [New in 3.8.1](#new-in-381) · [Inside the studio](#inside-the-studio) · [Capabilities](#what-you-can-make) · [Privacy](#local-processing-and-privacy) · [Model licences](#models-and-licensing)
+[Get started](#get-started) · [New in 3.8.2](#new-in-382) · [Inside the studio](#inside-the-studio) · [Capabilities](#what-you-can-make) · [Privacy](#local-processing-and-privacy) · [Model licences](#models-and-licensing) · [Documentation](docs/README.md)
 
-> **Source-only · 3.8.1.** Build locally; no official app download is provided. [Release setup](#get-started) · [Managed setup on main](docs/RUNTIME_BOOTSTRAP.md) · [Model terms](#models-and-licensing). Models and dependencies are downloaded separately under their own licence terms.
+> **Source-only · 3.8.2.** Build locally; no official app download is provided. [Release setup](#get-started) · [Managed setup on main](docs/RUNTIME_BOOTSTRAP.md) · [Model terms](#models-and-licensing). Models and dependencies are downloaded separately under their own licence terms.
 
-## New in 3.8.1
+## New in 3.8.2
 
-Cast grows from "render and join" into a scene workshop.
+A polish release: fixes from a full QA pass, and a few things that were missing.
 
-- **Scene Editor.** Open a rendered scene on a full-window, Audacity-style multitrack timeline: one track per character with **Mute**, **Solo** and volume, and every line as a clip you can drag, trim, fade, re-level or re-render. Clips snap to each other and to the playhead, never stack on one track, and the master is remixed a moment after each edit. Undo and redo cover every edit.
-- **Interruptions.** End a line with `--` and the next speaker cuts it off; start a line with `>>` and it talks over the previous one. Both can also be switched on or off per clip in the editor.
-- **One room for everyone.** **Room** (Dry, Booth, Small room, Large room) evens out the voices' levels and places them in one shared space with quiet room tone under the gaps.
-- **Together engine (optional).** Install [MOSS-TTSD](#together-engine-optional) and Cast can perform up to six lines at a time as one exchange, so the voices react to each other. Each voice is sampled cleanly by OmniVoice first, and every passage is checked against the script.
-- **Words that came out wrong, marked on the timeline.** Every rendered line is transcribed with Whisper. Misheard words show as red marks on the clip; double-click a clip to change its words and it re-renders in place.
-- **Finishing tools.** Markers, loop playback, a **Pace** slider that tightens or loosens every gap at once, and exports for the mix (original level, or Podcast −16, YouTube −14 or Broadcast −23 LUFS), one dry stem per character, and SRT or WebVTT subtitles.
-- **Scenes in the Library.** Save a scene with its script, voices, room, timeline and every rendered line; reopen, rename, export or delete it from **Library › Scenes**, or keep a copy with **Save as New Scene**. A line that fails no longer stops the scene: it is retried once, and **Retry Failed** finishes the rest.
-- **Fix:** opening Cast could crash VoxAster in some window sizes.
+- **Long Form: Rebuild Master.** Retry a single segment, then join the segments you already have into a new master in seconds. Before, a new master meant rendering every segment again, which changed the ones you liked.
+- **Every take is kept.** All 2–4 takes from a multi-take generation now go into Takes and the open project, instead of disappearing at the next generation.
+- **Scene Editor.** Drag along the ruler to scrub the playhead; hold **⇧** while dragging to set a loop. Clear a loop with its **✕**, the loop button, **L** or **Esc**. The playhead keeps its place after an edit, and clicking empty track space while paused moves it there.
+- **Cast gap.** Changing **Gap between lines** on a rendered scene moves the lines to match, keeping your timeline edits, interruptions and talk-overs (one undo step).
+- **Safer.** Deleted voices and scenes go to the Trash. **Clear All Takes** asks first. **New Scene** and **Open Scene** offer to save a scene you haven't saved. **Clear Script** and **Replace with Clipboard** can be undone with **⌘Z**.
+- **Clearer errors.** An invalid setting names the setting and its range, for example "Fixed duration must be more than 0 and at most 600 seconds".
+- **Fixes.**
+  - Play buttons in the Library and Studio now switch to pause.
+  - The Record menu shows **Stop Recording** while recording.
+  - Only one sound plays at a time.
+  - Long Form splits at `?`, `!` and `…` as well as full stops, and breaks over-long sentences.
+  - Re-rendering a Cast line keeps its fades.
+  - Waveform lists no longer re-read audio files many times a second during playback.
 
-### Upgrading from 3.8.0
+### Upgrading from 3.8.1
 
-Voices, takes, projects, drafts, Performance productions and the Cast script carry over. A **managed runtime** needs **Settings → Engine → Set Up or Repair Runtime** once, because its lock records the app version; repair reinstalls from the verified downloads it has already kept. Python-environment setups are unaffected.
+Voices, takes, projects, drafts, Performance productions and Cast scenes carry over. A **managed runtime** needs **Settings → Engine → Set Up or Repair Runtime** once, because its lock records the app version; repair reuses the verified downloads it has already kept. No model or package changed.
 
-## New in 3.8
+### Earlier in 3.8
 
-- **One studio window.** Voice Clone, Voice Design, Long Form, Performance and Cast sit in the toolbar (⌘1–⌘5). The voice you are using is drawn across the top of the page, the script sits on ruled paper with a worked example for each mode, and every take collects underneath as a playable strip. An inspector holds voice, render and pronunciation settings; Library tables, an Engine Lab window and a standard Settings window replace the old pages. Follows the macOS light/dark appearance.
-- **Reference Cleaner.** Long reference clips slow generation and blur the voice. The Cleaner finds the cleanest 6–15 seconds of one person speaking, transcribes it exactly, marks it on the waveform and can save it as a new voice.
-- **Take Doctor.** Each take is transcribed on your Mac with Whisper and scored against the script. Wrong or missing words are underlined; re-render just that sentence and it is spliced back into the take, or add a pronunciation rule in one click. With several takes, the best is marked.
-- **Cast.** Write `NAME: line` scripts, give each character a saved or designed voice, and render the scene as one track. A designed character keeps its voice from its first line onward.
-- **Reliability.** Generation no longer freezes on long references, the app stays responsive while the engine works, and quitting never hangs on a busy backend.
+- **3.8.1** added the **Scene Editor** (a multitrack timeline for Cast), interruptions with `--` and `>>`, a shared **Room**, the optional **Together** engine (MOSS-TTSD), Whisper line checks, loudness, stem and subtitle exports, and Scenes in the Library.
+- **3.8.0** brought the single studio window, the **Reference Cleaner**, **Take Doctor** and **Cast**, and fixed generation freezing on long references.
 
-See the [changelog](CHANGELOG.md) for details.
+The [changelog](CHANGELOG.md) has the full details.
 
 ## Inside the studio
 
-Real VoxAster 3.8 windows from a demo profile; the Scene Editor is the app's own view rendered from 3.8.1 with a demo scene. Every voice in them was invented with Voice Design, so no real person's voice and no personal recordings appear. The app follows your Mac's light or dark appearance. Select an image for full size.
+Real VoxAster 3.8 windows from a demo profile; the Scene Editor is the app's own view rendered from 3.8.1 with a demo scene. The layout is unchanged in 3.8.2. Every voice in them was invented with Voice Design, so no real person's voice and no personal recordings appear. The app follows your Mac's light or dark appearance. Select an image for full size.
 
 ### Voice Clone
 
@@ -65,7 +67,7 @@ Describe a speaker with the model's supported attributes, start from a preset su
 
 [![Long Form in light mode: a three-chapter script on ruled paper, its 47-second master with a ruler, and three rendered segments below.](docs/images/3.8/long-form.png)](docs/images/3.8/long-form.png)
 
-Paste a chapter, an article or a narration. It is split at sentence boundaries into segments you can edit and re-render one by one, then joined into a single master.
+Paste a chapter, an article or a narration. It is split at sentence boundaries into segments you can edit and re-render one by one, then joined into a single master. After re-rendering a segment, **Rebuild Master** joins the segments you have without rendering any again.
 
 ### Performance
 
@@ -83,7 +85,7 @@ Write `NAME: line` and give each character a saved or designed voice. The scene 
 
 [![The Scene Editor in dark mode: tracks for Narrator, Mara and Tom with Mute, Solo and volume controls; Tom's line marked with scissors is cut off as Mara talks over it, a green marker reads "Mara cuts in", and the narrator's last line fades out.](docs/images/3.8/scene-editor.png)](docs/images/3.8/scene-editor.png)
 
-A full-window multitrack timeline in the style of Audacity. Drag clips to move them and their edges to trim; hold **⌘** to stop snapping. Double-click a clip to change its words. Drop markers with **M**, drag across the ruler to set a loop and press **L**, and use **Pace** to tighten every gap at once. Export the mix at a loudness target, one stem per character, or subtitles.
+A full-window multitrack timeline in the style of Audacity. Drag clips to move them and their edges to trim; hold **⌘** to stop snapping. Double-click a clip to change its words. Drag along the ruler to scrub the playhead, and hold **⇧** while dragging to set a loop. Drop markers with **M**, and use **Pace** to tighten every gap at once. Export the mix at a loudness target, one stem per character, or subtitles.
 
 | Keys | Action |
 |---|---|
@@ -93,14 +95,15 @@ A full-window multitrack timeline in the style of Audacity. Drag clips to move t
 | **⌘Z / ⇧⌘Z** | Undo / redo |
 | **⌘+ / ⌘−** | Zoom in / out |
 | **Home / End** | Jump to the start / end |
-| **M** · **L** | Add a marker · loop |
-| **Esc** | Close the editor |
+| **M** | Add a marker at the playhead |
+| **L** | Loop the selected clip (or 4 s from the playhead); press again to clear the loop |
+| **Esc** | Clear the loop, then the selection, then close the editor |
 
 ### Library
 
 [![Library: a sortable table of takes with their waveforms, scripts, kinds and times.](docs/images/3.8/library.png)](docs/images/3.8/library.png)
 
-Takes, voices, Performance productions and Cast scenes each have a Library table; Takes can be sorted and searched. Double-click to play or to use a voice; right-click to export, reveal or delete. Projects keep their own takes.
+Takes, voices, Performance productions and Cast scenes each have a Library table; Takes can be sorted and searched. Double-click to play or to use a voice; right-click to export, reveal, or move to the Trash. Projects keep their own takes.
 
 ## What you can make
 
@@ -108,7 +111,7 @@ Takes, voices, Performance productions and Cast scenes each have a Library table
 |---|---|
 | **Voice Clone** | Generate new speech from a reference recording and save voices for reuse. Record a reference directly on your Mac or import a permitted clip. |
 | **Voice Design** | Create a speaker from the model's supported gender, age, pitch and accent attributes or a preset, or let Auto choose a voice. |
-| **Long Form** | Split a longer script into editable segments, retry any one and join them into a master. |
+| **Long Form** | Split a longer script into editable segments, retry any one and rebuild the master from the segments you keep. |
 | **Performance** | Insert exact pauses, adjust segment loudness, retry individual segments and rebuild a master from retained takes. |
 | **Cast** | Render a multi-character script, one voice per character, into a single scene in a shared room. Mark interruptions with `--` and `>>`; save scenes to the Library. |
 | **Scene Editor** | Arrange a scene on a multitrack timeline: move, trim, fade and re-level lines, mute or solo characters, add markers and loops, and export the mix, stems or subtitles. |
@@ -163,10 +166,10 @@ Intel Macs, Windows and Linux are not supported by this native app. Voice Design
    brew install python@3.12 ffmpeg git
    ```
 
-3. Download the tagged 3.8.1 source, prepare the runtime, then build and open VoxAster:
+3. Download the tagged 3.8.2 source, prepare the runtime, then build and open VoxAster:
 
    ```sh
-   git clone --branch v3.8.1 --single-branch https://github.com/ninja8170/VoxAster.git
+   git clone --branch v3.8.2 --single-branch https://github.com/ninja8170/VoxAster.git
    cd VoxAster
    ./setup-runtime.command
    ./verify-runtime.command
@@ -227,4 +230,4 @@ The [Boson agreement](Licenses/BOSON-HIGGS-AUDIO-2.txt), [Meta agreement and acc
 - **Pronunciation, pauses, vocal events or Cast interruptions?** Read [script controls](docs/CONTROLS.md). Unsupported acting tags are rejected; Markdown is not acting direction.
 - **Contributing?** Read [CONTRIBUTING.md](CONTRIBUTING.md). Run `./test.command`, `./verify-runtime.command` and `git diff --check` for code changes. Real listening acceptance remains separate from automated tests.
 - **Reporting a problem?** Use [Issues](https://github.com/ninja8170/VoxAster/issues) with non-sensitive examples. Report vulnerabilities through the guidance in [SECURITY.md](SECURITY.md).
-- **Release history:** [CHANGELOG.md](CHANGELOG.md). **App licence:** [MIT](LICENSE).
+- **Documentation:** [all guides and references](docs/README.md). **Release history:** [CHANGELOG.md](CHANGELOG.md). **App licence:** [MIT](LICENSE).

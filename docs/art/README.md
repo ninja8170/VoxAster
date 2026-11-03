@@ -10,10 +10,10 @@ Typography is rasterized from an installed system font. No proprietary font file
 
 | Artwork | Original product view |
 |---|---|
-| [Hero](hero.jpg) | [Voice Design](../images/voice-design.png) |
-| [Design](design.jpg) | [Voice Design](../images/voice-design.png) |
-| [Clone](clone.jpg) | [Voice Clone](../images/voice-clone.png) |
-| [Long Form](long-form.jpg) | [Long Form](../images/long-form.png) |
-| [Performance](performance.jpg) | [Performance](../images/performance.png) |
+| [Hero](hero.jpg) | [Voice Design](../images/3.7/voice-design.png) |
+| [Design](design.jpg) | [Voice Design](../images/3.7/voice-design.png) |
+| [Clone](clone.jpg) | [Voice Clone](../images/3.7/voice-clone.png) |
+| [Long Form](long-form.jpg) | [Long Form](../images/3.7/long-form.png) |
+| [Performance](performance.jpg) | [Performance](../images/3.7/performance.png) |
 
 Design exploration, source layers and local preview/rendering tools are intentionally excluded from the public artwork package.

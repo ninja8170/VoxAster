@@ -21,7 +21,7 @@ LEGACY_AUDIO_HASHES = {
 # App releases whose Performance assembly code is unchanged from this one. Their
 # frozen productions stay renderable after an app-only version bump; any other
 # app version, or any model/package/tokenizer change, is still rejected.
-ASSEMBLY_COMPATIBLE_APP_VERSIONS = {'3.7.0', '3.8.0'}
+ASSEMBLY_COMPATIBLE_APP_VERSIONS = {'3.7.0', '3.8.0', '3.8.1'}
 
 
 def compatible_production_runtime(recorded):

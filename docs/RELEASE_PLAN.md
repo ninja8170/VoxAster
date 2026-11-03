@@ -1,6 +1,6 @@
 # First public source release plan
 
-The tokenizer migration and training removal are prepared for the first source release; see the final validation verdict in [RELEASE_READINESS.md](../RELEASE_READINESS.md). This plan is not authorization to create a repository, push or publish.
+The tokenizer migration and training removal are prepared for the first source release; see the final validation verdict in [RELEASE_READINESS.md](RELEASE_READINESS.md). This plan is not authorization to create a repository, push or publish.
 
 | Field | Recommendation |
 |---|---|

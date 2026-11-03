@@ -32,10 +32,10 @@ These images show the real native VoxAster 3.7.0 interface from validated source
 
 | Image | Workspace |
 |---|---|
-| [voice-design.png](voice-design.png) | Supported speaker attributes and script editor |
-| [voice-clone.png](voice-clone.png) | Synthetic reference, transcript and generation controls |
-| [long-form.png](long-form.png) | Editable production chunks before generation |
-| [performance.png](performance.png) | Prepared segments, app-level directions and exact pause sample count |
+| [voice-design.png](3.7/voice-design.png) | Supported speaker attributes and script editor |
+| [voice-clone.png](3.7/voice-clone.png) | Synthetic reference, transcript and generation controls |
+| [long-form.png](3.7/long-form.png) | Editable production chunks before generation |
+| [performance.png](3.7/performance.png) | Prepared segments, app-level directions and exact pause sample count |
 
 ## Capture and privacy
 
